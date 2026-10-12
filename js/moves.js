@@ -101,36 +101,90 @@ const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 export function checkMove(moveId, body, base) {
   const m = MOVES[moveId];
   const p = body;
+  const s = mid(p.lSh, p.rSh);
+  if (!s) return false;
   switch (m.kind) {
     case 'hand': {
-      return [p.lWr, p.rWr].some(w => w && dist(w, m.pos) < m.radius);
+      // Targets are relative to where your shoulders are *now*, so drifting
+      // a little to one side doesn't make punches miss.
+      const target = [s[0] + m.pos[0], s[1] + m.pos[1]];
+      for (const side of ['l', 'r']) {
+        const w = p[side + 'Wr'], sh = p[side + 'Sh'];
+        if (!w) continue;
+        // 1) hand is near the target
+        if (dist(w, target) < m.radius + 0.1) return true;
+        // 2) arm is stretched out pointing at the target (works for any arm length)
+        if (sh) {
+          const v = [w[0] - sh[0], w[1] - sh[1]];
+          const d = [target[0] - sh[0], target[1] - sh[1]];
+          const lv = Math.hypot(...v), ld = Math.hypot(...d);
+          const cos = (v[0] * d[0] + v[1] * d[1]) / (lv * ld || 1);
+          // ...and the hand really is out to that side (so "reach up" doesn't count as a high punch)
+          const sideways = (w[0] - s[0]) * Math.sign(m.pos[0]) > Math.abs(m.pos[0]) * 0.6;
+          if (lv > ld * 0.65 && cos > 0.87 && sideways) return true; // within ~30°
+        }
+      }
+      return false;
     }
     case 'knee': {
-      const knee = m.side < 0 ? p.lKn : p.rKn;
-      const ref = m.side < 0 ? base.kneeL : base.kneeR;
-      const s = mid(p.lSh, p.rSh);
-      // shoulders must stay roughly level, otherwise it's a jump, not a knee raise
-      return !!knee && knee[1] > ref + 0.7 && (!s || s[1] < 0.3);
+      if (s[1] > 0.3) return false; // that's a jump, not a knee raise
+      const sd = m.side < 0 ? 'l' : 'r', od = m.side < 0 ? 'r' : 'l';
+      const knee = p[sd + 'Kn'], hip = p[sd + 'Hip'];
+      if (!knee) return false;
+      // a) knee rose from its standing height
+      const ref = sd === 'l' ? base.kneeL : base.kneeR;
+      if (knee[1] > ref + 0.65) return true;
+      // b) thigh lifted (knee came up close to hip height) while the other leg stays straight
+      if (hip) {
+        const thigh = sd === 'l' ? base.thighL : base.thighR;
+        const lifted = hip[1] - knee[1] < thigh * 0.55;
+        const oKnee = p[od + 'Kn'], oHip = p[od + 'Hip'];
+        const oThigh = sd === 'l' ? base.thighR : base.thighL;
+        const otherStraight = !oKnee || !oHip || oHip[1] - oKnee[1] > oThigh * 0.75;
+        if (lifted && otherStraight) return true;
+      }
+      return false;
     }
     case 'up': {
       if (!p.lWr || !p.rWr) return false;
-      const need = Math.max(1.2, (p.nose ? p.nose[1] : 0.95) + 0.2);
+      const head = p.nose ? p.nose[1] : s[1] + 0.95;
+      const need = Math.max(s[1] + 1.1, head + 0.1);
       return p.lWr[1] > need && p.rWr[1] > need;
     }
     case 'duck': {
-      const s = mid(p.lSh, p.rSh);
-      return !!s && s[1] < -0.65;
+      if (s[1] < -0.6) return true;
+      // squat: both thighs fold (hips drop toward knees) and shoulders come down
+      const t = thighFold(p, base);
+      return t != null && t < 0.6 && s[1] < -0.3;
     }
     case 'jump': {
-      const s = mid(p.lSh, p.rSh);
-      return !!s && s[1] > 0.35;
+      if (s[1] > 0.32) return true;
+      if (base.ankleY != null && p.lAn && p.rAn) {
+        return (p.lAn[1] + p.rAn[1]) / 2 > base.ankleY + 0.3 && s[1] > 0.12;
+      }
+      return false;
     }
     case 'dodge': {
-      const s = mid(p.lSh, p.rSh);
-      return !!s && s[0] * m.side > 0.8;
+      const h = mid(p.lHip, p.rHip);
+      const x = h ? (s[0] + h[0]) / 2 : s[0];
+      return x * m.side > 0.7;
     }
   }
   return false;
+}
+
+/** Average thigh height relative to standing (1 = straight legs, ~0 = deep squat). */
+function thighFold(p, base) {
+  const r = [];
+  if (p.lHip && p.lKn && base.thighL) r.push((p.lHip[1] - p.lKn[1]) / base.thighL);
+  if (p.rHip && p.rKn && base.thighR) r.push((p.rHip[1] - p.rKn[1]) / base.thighR);
+  return r.length ? r.reduce((a, b) => a + b, 0) / r.length : null;
+}
+
+/** All moves the body is doing right now (for the live "detected" indicator). */
+export function detectAll(body, base) {
+  if (!body) return [];
+  return Object.keys(MOVES).filter(id => checkMove(id, body, base));
 }
 
 export function mid(a, b) {

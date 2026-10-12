@@ -12,26 +12,6 @@ export const TRACKS = [
       { root: 43, notes: [55, 59, 62] }, // G
     ],
   },
-  {
-    id: 'drive', name: 'Midnight Drive', bpm: 116, bars: 72, diff: 'medium', approach: 2.0, color: '#ff2bd6',
-    desc: 'Full-body cardio groove',
-    chords: [
-      { root: 41, notes: [56, 60, 65] }, // Fm
-      { root: 37, notes: [56, 61, 65] }, // Db
-      { root: 44, notes: [56, 60, 63] }, // Ab
-      { root: 39, notes: [55, 58, 63] }, // Eb
-    ],
-  },
-  {
-    id: 'overdrive', name: 'Overdrive', bpm: 128, bars: 84, diff: 'hard', approach: 1.7, color: '#ffd23f',
-    desc: 'Fast combos, jumps & ducks', hats16: true,
-    chords: [
-      { root: 40, notes: [55, 59, 64] }, // Em
-      { root: 36, notes: [55, 60, 64] }, // C
-      { root: 43, notes: [55, 59, 62] }, // G
-      { root: 38, notes: [54, 57, 62] }, // D
-    ],
-  },
 ];
 
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);

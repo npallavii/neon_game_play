@@ -2,8 +2,11 @@ import { GUARD, POSES, clonePose, lerpPose, mid } from './moves.js';
 
 const MP_VERSION = '0.10.14';
 const MP_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+// "full" is noticeably more accurate than "lite" and still runs in real time on most laptops.
+const MODEL_URLS = {
+  full: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+  lite: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+};
 
 // MediaPipe landmark indices. The view is mirrored, so the person's left side
 // appears on the screen's left: "l" = screen-left = person's left.
@@ -19,48 +22,83 @@ export const BONES = [
   ['lHip', 'lKn'], ['lKn', 'lAn'], ['rHip', 'rKn'], ['rKn', 'rAn'],
 ];
 
-/** Webcam + MediaPipe pose landmarker. Produces mirrored pixel-space landmarks. */
+/**
+ * One-Euro filter: heavy smoothing when a point is still (no jitter),
+ * light smoothing when it moves fast (no lag on punches).
+ */
+class OneEuro {
+  constructor(minCutoff = 1.2, beta = 0.012, dCutoff = 1.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+    this.x = null;
+    this.dx = 0;
+  }
+  static alpha(cutoff, dt) {
+    const tau = 1 / (2 * Math.PI * cutoff);
+    return 1 / (1 + tau / dt);
+  }
+  filter(x, dt) {
+    if (this.x == null || dt <= 0) { this.x = x; return x; }
+    const dx = (x - this.x) / dt;
+    this.dx += (dx - this.dx) * OneEuro.alpha(this.dCutoff, dt);
+    const cutoff = this.minCutoff + this.beta * Math.abs(this.dx);
+    this.x += (x - this.x) * OneEuro.alpha(cutoff, dt);
+    return this.x;
+  }
+}
+
+/** Webcam + MediaPipe pose landmarker. Produces filtered, mirrored pixel-space landmarks. */
 export class PoseTracker {
   constructor(video) {
     this.video = video;
     this.landmarker = null;
     this.lastVideoTime = -1;
-    this.px = null;          // smoothed pixel landmarks { name: {x, y, v} }
+    this.lastStamp = 0;
+    this.px = null;          // filtered pixel landmarks { name: {x, y, v} }
     this.lastSeen = 0;
     this.ready = false;
+    this.filters = {};
+    for (const n of NAMES) this.filters[n] = { x: new OneEuro(), y: new OneEuro() };
+    this.fps = 0;
   }
 
   async init(onStatus) {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('This browser cannot access the camera. Use Chrome or Edge, and open the game from http://localhost (see README).');
+      throw new Error('This browser cannot access the camera. Use Chrome or Edge, and open the game from http://localhost or the GitHub Pages link.');
     }
     if (!this.video.srcObject) {
       onStatus?.('Starting camera…', 'Allow camera access when your browser asks.');
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        video: { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 60, min: 24 }, facingMode: 'user' },
         audio: false,
       });
       this.video.srcObject = stream;
       await this.video.play();
     }
     if (!this.landmarker) {
-      onStatus?.('Loading motion tracking…', 'Downloading the pose model (first time only takes a few seconds).');
+      onStatus?.('Loading motion tracking…', 'Downloading the pose model. The first time takes a few seconds.');
       const { PoseLandmarker, FilesetResolver } = await import(`${MP_URL}/vision_bundle.mjs`);
       const fileset = await FilesetResolver.forVisionTasks(`${MP_URL}/wasm`);
-      const opts = (delegate) => ({
-        baseOptions: { modelAssetPath: MODEL_URL, delegate },
+      const opts = (model, delegate) => ({
+        baseOptions: { modelAssetPath: MODEL_URLS[model], delegate },
         runningMode: 'VIDEO',
         numPoses: 1,
-        minPoseDetectionConfidence: 0.5,
-        minPosePresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
+        minPoseDetectionConfidence: 0.6,
+        minPosePresenceConfidence: 0.6,
+        minTrackingConfidence: 0.6,
       });
-      try {
-        this.landmarker = await PoseLandmarker.createFromOptions(fileset, opts('GPU'));
-      } catch (e) {
-        console.warn('GPU delegate failed, falling back to CPU', e);
-        this.landmarker = await PoseLandmarker.createFromOptions(fileset, opts('CPU'));
+      const attempts = [['full', 'GPU'], ['lite', 'GPU'], ['lite', 'CPU']];
+      for (const [model, delegate] of attempts) {
+        try {
+          this.landmarker = await PoseLandmarker.createFromOptions(fileset, opts(model, delegate));
+          this.modelName = `${model}/${delegate}`;
+          break;
+        } catch (e) {
+          console.warn(`Pose model ${model}/${delegate} failed`, e);
+        }
       }
+      if (!this.landmarker) throw new Error('Could not load the motion-tracking model. Check your internet connection.');
     }
     this.ready = true;
   }
@@ -68,7 +106,7 @@ export class PoseTracker {
   get width() { return this.video.videoWidth || 640; }
   get height() { return this.video.videoHeight || 480; }
 
-  /** Run detection on the newest video frame. Returns smoothed pixel landmarks or null. */
+  /** Run detection on the newest video frame. Returns filtered pixel landmarks or null. */
   update(now) {
     if (!this.ready || this.video.readyState < 2) return this.px;
     if (this.video.currentTime === this.lastVideoTime) return this.px;
@@ -76,23 +114,27 @@ export class PoseTracker {
 
     const res = this.landmarker.detectForVideo(this.video, now);
     const lm = res.landmarks?.[0];
+    const dt = this.lastStamp ? (now - this.lastStamp) / 1000 : 1 / 30;
+    this.lastStamp = now;
+    this.fps += (1 / Math.max(dt, 1e-3) - this.fps) * 0.1;
     if (!lm) {
       if (now - this.lastSeen > 400) this.px = null;
       return this.px;
     }
     this.lastSeen = now;
     const W = this.width, H = this.height;
-    const a = 0.65; // smoothing (higher = more responsive)
     const next = {};
     for (const name of NAMES) {
       const p = lm[IDX[name]];
-      const x = (1 - p.x) * W; // mirror
-      const y = p.y * H;
       const v = p.visibility ?? 1;
+      const f = this.filters[name];
       const prev = this.px?.[name];
-      next[name] = prev
-        ? { x: prev.x + (x - prev.x) * a, y: prev.y + (y - prev.y) * a, v }
-        : { x, y, v };
+      if (v < 0.15 && prev) {
+        // landmark lost for a moment (motion blur, out of frame): hold its last position
+        next[name] = { x: prev.x, y: prev.y, v: prev.v * 0.8 };
+        continue;
+      }
+      next[name] = { x: f.x.filter((1 - p.x) * W, dt), y: f.y.filter(p.y * H, dt), v };
     }
     this.px = next;
     return next;
@@ -106,20 +148,56 @@ export class PoseTracker {
   }
 }
 
-/** Converts pixel landmarks to body space using a calibration. */
-export function toBody(px, calib, minVis = 0.35) {
+/**
+ * Converts pixel landmarks to body space.
+ * Keeps the calibrated origin (so ducks, jumps and side-steps are measured
+ * against where you stood) but continuously adapts the scale from torso
+ * length, so stepping closer to or further from the camera doesn't break detection.
+ */
+export class BodyMapper {
+  constructor(calib) {
+    this.calib = calib;
+    this.scale = calib.sw;
+  }
+
+  map(px) {
+    const c = this.calib;
+    if (!px) return null;
+    const sh = px.lSh && px.rSh && px.lSh.v > 0.5 && px.rSh.v > 0.5 ? px : null;
+    const hipOk = px.lHip && px.rHip && px.lHip.v > 0.5 && px.rHip.v > 0.5;
+    if (sh && hipOk) {
+      const torso = Math.hypot(
+        (px.lSh.x + px.rSh.x - px.lHip.x - px.rHip.x) / 2,
+        (px.lSh.y + px.rSh.y - px.lHip.y - px.rHip.y) / 2,
+      );
+      const target = Math.min(c.sw * 1.4, Math.max(c.sw * 0.7, torso / c.torsoRatio));
+      this.scale += (target - this.scale) * 0.03; // slow: ignores leaning, follows walking
+    }
+    return toBody(px, { cx: c.cx, cy: c.cy, sw: this.scale });
+  }
+}
+
+/** Plain conversion with a fixed origin/scale. */
+export function toBody(px, calib) {
   if (!px || !calib) return null;
   const out = {};
   for (const name of NAMES) {
     const p = px[name];
+    const minVis = name.endsWith('Wr') || name.endsWith('An') ? 0.2 : 0.35;
     if (p && p.v >= minVis) out[name] = [(p.x - calib.cx) / calib.sw, -(p.y - calib.cy) / calib.sw];
   }
-  return out.lSh && out.rSh ? out : null;
+  if (!out.lSh || !out.rSh) return null;
+  // Fast punches blur the hand; estimate a missing wrist from a straight arm.
+  for (const s of ['l', 'r']) {
+    const sh = out[s + 'Sh'], el = out[s + 'El'];
+    if (!out[s + 'Wr'] && sh && el) out[s + 'Wr'] = [el[0] * 2 - sh[0], el[1] * 2 - sh[1]];
+  }
+  return out;
 }
 
 /**
  * Collects ~1.5 s of steady frames with the whole body visible and derives
- * the body-space origin/scale plus baseline knee heights.
+ * the body-space origin/scale plus baselines (knee, thigh, ankle heights).
  */
 export class Calibrator {
   constructor() { this.reset(); }
@@ -144,20 +222,36 @@ export class Calibrator {
     const sw = Math.hypot(px.lSh.x - px.rSh.x, px.lSh.y - px.rSh.y);
     if (sw < 25) { this.message = 'Come a little closer'; this.frames = []; return null; }
 
-    // Must be holding still
     const f0 = this.frames[0];
     if (f0 && Math.hypot(cx - f0.cx, cy - f0.cy) > f0.sw * 0.35) {
       this.message = 'Hold still…';
       this.frames = [];
+      return null;
     }
     this.message = 'Hold still… calibrating';
-    this.frames.push({ cx, cy, sw, kl: px.lKn.y, kr: px.rKn.y });
+    const hx = (px.lHip.x + px.rHip.x) / 2, hy = (px.lHip.y + px.rHip.y) / 2;
+    const ankles = px.lAn?.v > 0.5 && px.rAn?.v > 0.5;
+    this.frames.push({
+      cx, cy, sw,
+      torso: Math.hypot(cx - hx, cy - hy),
+      kl: px.lKn.y, kr: px.rKn.y,
+      tl: px.lKn.y - px.lHip.y, tr: px.rKn.y - px.rHip.y,
+      an: ankles ? (px.lAn.y + px.rAn.y) / 2 : NaN,
+    });
     if (this.frames.length < 45) return null;
 
-    const avg = k => this.frames.reduce((s, f) => s + f[k], 0) / this.frames.length;
+    const avg = k => {
+      const vals = this.frames.map(f => f[k]).filter(v => !Number.isNaN(v));
+      return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : NaN;
+    };
     const c = { cx: avg('cx'), cy: avg('cy'), sw: avg('sw') };
+    c.torsoRatio = avg('torso') / c.sw;
     c.kneeL = -(avg('kl') - c.cy) / c.sw;
     c.kneeR = -(avg('kr') - c.cy) / c.sw;
+    c.thighL = avg('tl') / c.sw;
+    c.thighR = avg('tr') / c.sw;
+    const an = avg('an');
+    c.ankleY = Number.isNaN(an) ? null : -(an - c.cy) / c.sw;
     return c;
   }
 }
@@ -173,7 +267,11 @@ export class VirtualBody {
       KeyA: 'PL', KeyD: 'PR', KeyQ: 'HL', KeyE: 'HR', KeyZ: 'KL', KeyC: 'KR',
       KeyW: 'UP', KeyS: 'DUCK', Space: 'JUMP', ArrowLeft: 'DL', ArrowRight: 'DR',
     };
-    this.base = { kneeL: GUARD.lKn[1], kneeR: GUARD.rKn[1] };
+    this.base = {
+      kneeL: GUARD.lKn[1], kneeR: GUARD.rKn[1],
+      thighL: GUARD.lHip[1] - GUARD.lKn[1], thighR: GUARD.rHip[1] - GUARD.rKn[1],
+      ankleY: (GUARD.lAn[1] + GUARD.rAn[1]) / 2,
+    };
   }
 
   keydown(code, now) {

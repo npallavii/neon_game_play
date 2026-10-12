@@ -26,6 +26,14 @@ You need an internet connection the first time, because Three.js, MediaPipe and 
 
 Press **P** or **Esc** to pause. You can re-calibrate from the pause menu.
 
+## Getting accurate tracking
+
+- **Light:** light the room from the front, facing you. Avoid a bright window behind you.
+- **Framing:** your whole body, including your knees, should be in view. Keep about 2–3 m from the camera.
+- **Clothes and background:** clothes that contrast with the background help. A plain wall is best.
+- **DETECTED chip:** the chip in the bottom-left shows what the game recognises in real time. If a move doesn't show up there, adjust the framing or lighting first.
+- **Re-calibrate:** if you've moved a lot, pause with **P** and choose *Re-calibrate*.
+
 ## Project layout
 
 | File | Purpose |

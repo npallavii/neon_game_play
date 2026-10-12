@@ -1,17 +1,18 @@
 import { World, SPEED } from './world.js';
 import { AudioEngine, TRACKS } from './audio.js';
 import { generateBeatmap } from './beatmap.js';
-import { PoseTracker, Calibrator, VirtualBody, toBody, drawCamSkeleton } from './pose.js';
+import { PoseTracker, Calibrator, VirtualBody, BodyMapper, toBody, drawCamSkeleton } from './pose.js';
 import { Coach } from './coach.js';
-import { checkMove, POSES, GUARD, clonePose, lerpPose } from './moves.js';
+import { detectAll, POSES, GUARD, COACH_TEXT, clonePose, lerpPose } from './moves.js';
 
 const $ = id => document.getElementById(id);
 
 // ---------------- Tuning ----------------
-const POSE_LATENCY = 0.07;  // camera + model delay compensation (s)
-const EARLY = 0.3;          // how early a move may count (s)
-const LATE = 0.3;           // how late a move may count (s)
-const GRADES = [['perfect', 0.1, 300], ['great', 0.18, 200], ['good', Infinity, 100]];
+const POSE_LATENCY = 0.08;  // camera + model delay compensation (s)
+const EARLY = 0.35;         // how early a move may count (s)
+const LATE = 0.35;          // how late a move may count (s)
+const MEMORY = 0.15;        // a move detected this recently still counts (catches quick punches between frames)
+const GRADES = [['perfect', 0.12, 300], ['great', 0.22, 200], ['good', Infinity, 100]];
 const SPAWN_DISTANCE = 75;  // metres ahead where blocks appear
 
 // ---------------- Core objects ----------------
@@ -33,6 +34,7 @@ let customBuffer = null;
 let customName = '';
 let state = 'menu'; // menu | loading | calibrate | play | paused | results
 let calib = null;
+let mapper = null; // pixel -> body space, adapts to distance from the camera
 let game = null;
 let pendingSong = null;
 let resumeAfterCalib = false;
@@ -211,6 +213,7 @@ function beginSong() {
     points: 0,
     lastBeat: -99,
     lostSince: null,
+    lastTrue: {}, // move -> last song time it was detected
   };
   $('trackName').textContent = song.name.toUpperCase();
   updateHud(true);
@@ -367,17 +370,23 @@ function updateGame(dt, body, px) {
   const camera = settings.mode === 'camera';
   const jt = camera ? t - POSE_LATENCY : t;
   const base = camera ? calib : virtual.base;
+  const active = detectAll(body, base);
+  for (const m of active) g.lastTrue[m] = jt;
+  showDetected(active);
   const used = new Set();
   for (const note of world.notes) {
     if (note.judged) continue;
     const d = jt - note.time;
     if (d < -EARLY) continue;
-    if (d > LATE) { judge(note, 'miss'); continue; }
-    if (body && !used.has(note.move) && checkMove(note.move, body, base)) {
+    const seen = g.lastTrue[note.move];
+    const hit = !used.has(note.move) && seen != null && jt - seen <= MEMORY && seen >= note.time - EARLY;
+    if (hit) {
       used.add(note.move);
-      const ad = Math.abs(d);
+      const ad = Math.abs(seen - note.time);
       const [grade, , pts] = GRADES.find(([, w]) => ad <= w);
       judge(note, grade, pts);
+    } else if (d > LATE) {
+      judge(note, 'miss');
     }
   }
   world.updateNotes(t);
@@ -401,6 +410,7 @@ function handleCalibration(px) {
     calibrator.progress);
   if (!c) return;
   calib = c;
+  mapper = new BodyMapper(c);
   audio.sfxHit('perfect');
   if (resumeAfterCalib && game) {
     resumeAfterCalib = false;
@@ -408,6 +418,16 @@ function handleCalibration(px) {
   } else {
     beginSong();
   }
+}
+
+// Live indicator of what the camera currently recognises
+let detectedText = null;
+function showDetected(active) {
+  const text = active.length ? active.map(m => COACH_TEXT[m]).join(' · ') : '—';
+  if (text === detectedText) return;
+  detectedText = text;
+  $('detectedMoves').textContent = text;
+  $('detected').classList.toggle('on', active.length > 0);
 }
 
 // Menu background: avatar dancing through the moves
@@ -469,12 +489,12 @@ function frame(now) {
       break;
     }
     case 'play':
-      body = settings.mode === 'camera' ? toBody(px, calib) : virtual.update(dt, now);
+      body = settings.mode === 'camera' ? mapper?.map(px) ?? null : virtual.update(dt, now);
       beatPhase = updateGame(dt, body, px);
       scroll = world.speed;
       break;
     case 'paused':
-      body = settings.mode === 'camera' ? toBody(px, calib) : virtual.pose;
+      body = settings.mode === 'camera' ? mapper?.map(px) ?? null : virtual.pose;
       scroll = 0;
       break;
   }
