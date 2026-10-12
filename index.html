@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neon Pulse</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="world"></canvas>
+  <div id="vignette"></div>
+
+  <!-- In-game HUD -->
+  <div id="hud" class="hidden">
+    <div class="hud-left">
+      <div class="hud-label">SCORE</div>
+      <div id="score" class="hud-value">0</div>
+    </div>
+    <div class="hud-center">
+      <div id="combo" class="combo">0</div>
+      <div class="hud-label">COMBO <span id="mult" class="mult">x1</span></div>
+    </div>
+    <div class="hud-right">
+      <div id="trackName" class="hud-label">TRACK</div>
+      <div class="progress"><div id="progressFill"></div></div>
+      <div class="hud-hint">P = pause</div>
+    </div>
+  </div>
+
+  <!-- Coach (guide silhouette) -->
+  <div id="coach" class="hidden">
+    <div class="coach-title">COACH</div>
+    <canvas id="coachCanvas" width="240" height="300"></canvas>
+    <div id="coachLabel">GET READY</div>
+  </div>
+
+  <!-- Webcam preview -->
+  <div id="cam" class="hidden">
+    <video id="video" playsinline muted></video>
+    <canvas id="camOverlay"></canvas>
+  </div>
+
+  <div id="popups"></div>
+  <div id="bigText"></div>
+  <div id="warning" class="hidden">STEP INTO THE CAMERA VIEW</div>
+
+  <!-- Menu -->
+  <section id="menu" class="screen">
+    <div class="menu-inner">
+      <h1 class="logo">NEON<span>PULSE</span></h1>
+      <p class="tagline">Punch, duck, jump and dance to the beat — your webcam is the controller.</p>
+
+      <h2 class="section-title">Choose a track</h2>
+      <div id="tracks" class="tracks"></div>
+
+      <div id="customPanel" class="custom hidden">
+        <label class="file-btn">
+          <input id="customFile" type="file" accept="audio/*" />
+          <span id="customFileName">Pick an MP3 / audio file…</span>
+        </label>
+        <div class="custom-row">
+          <label>BPM <input id="customBpm" type="number" min="60" max="200" value="120" /></label>
+          <label>First beat (s) <input id="customOffset" type="number" min="0" max="30" step="0.01" value="0" /></label>
+          <label>Level
+            <select id="customDiff">
+              <option value="easy">Easy</option>
+              <option value="medium" selected>Medium</option>
+              <option value="hard">Hard</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <h2 class="section-title">Controls</h2>
+      <div class="modes">
+        <button class="mode active" data-mode="camera">
+          <strong>📷 Camera</strong><span>Full-body tracking</span>
+        </button>
+        <button class="mode" data-mode="keyboard">
+          <strong>⌨️ Keyboard</strong><span>Practice / test mode</span>
+        </button>
+      </div>
+
+      <button id="startBtn" class="start">START</button>
+
+      <details class="howto">
+        <summary>How to play</summary>
+        <ul>
+          <li>Stand about <b>2–3 m</b> from the webcam so your whole body, knees included, is in view. Make sure the room is well lit.</li>
+          <li>Hit each neon block with a hand <b>just as it reaches you</b>. The glowing rings show where to aim.</li>
+          <li><b>REACH UP</b>: both hands above your head. <b>KNEE</b>: lift that knee high.</li>
+          <li><b>DUCK</b>: squat under the red beam. <b>JUMP</b>: hop over the purple bar. <b>STEP</b>: move your whole body sideways, away from the wall.</li>
+          <li>The coach on the left shows each move just before you need it. Keep hitting in a row to build your combo multiplier.</li>
+          <li>Keyboard mode: A / D punch · Q / E high · Z / C knee · W reach · S duck · Space jump · ← / → step.</li>
+        </ul>
+      </details>
+    </div>
+  </section>
+
+  <!-- Loading / calibration -->
+  <section id="calib" class="screen hidden">
+    <div class="panel">
+      <h2 id="calibTitle">Starting camera…</h2>
+      <p id="calibText">Allow camera access when your browser asks.</p>
+      <div class="ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" class="ring-bg"/><circle id="calibRing" cx="50" cy="50" r="44" class="ring-fg"/></svg><div id="calibPct">0%</div></div>
+      <button id="calibCancel" class="ghost">Back to menu</button>
+    </div>
+  </section>
+
+  <!-- Pause -->
+  <section id="pause" class="screen hidden">
+    <div class="panel">
+      <h2>PAUSED</h2>
+      <div class="btn-row">
+        <button id="resumeBtn" class="start small">RESUME</button>
+        <button id="recalBtn" class="ghost">Re-calibrate</button>
+        <button id="quitBtn" class="ghost">Quit</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Results -->
+  <section id="results" class="screen hidden">
+    <div class="panel results">
+      <div id="grade" class="grade">S</div>
+      <div id="resTrack" class="hud-label"></div>
+      <div id="resScore" class="res-score">0</div>
+      <div id="resBest" class="res-best"></div>
+      <div class="stats">
+        <div><span class="perfect">PERFECT</span><b id="sPerfect">0</b></div>
+        <div><span class="great">GREAT</span><b id="sGreat">0</b></div>
+        <div><span class="good">GOOD</span><b id="sGood">0</b></div>
+        <div><span class="miss">MISS</span><b id="sMiss">0</b></div>
+        <div><span>MAX COMBO</span><b id="sCombo">0</b></div>
+        <div><span>ACCURACY</span><b id="sAcc">0%</b></div>
+      </div>
+      <div class="btn-row">
+        <button id="againBtn" class="start small">PLAY AGAIN</button>
+        <button id="menuBtn" class="ghost">Menu</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="error" class="hidden"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
