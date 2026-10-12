@@ -322,6 +322,11 @@ export class World {
     this.moodUntil = this.time + 0.5;
   }
 
+  /** Short burst of extra warp + glow when the speed level goes up. */
+  boost() {
+    this.boostT = 1;
+  }
+
   confetti() {
     this.decor.confetti();
   }
@@ -643,7 +648,15 @@ export class World {
     this.halo.material.opacity = 0.35 + this.pulse * 0.15;
     this.hitLineMat.opacity = 0.45 + this.pulse * 0.55;
     this.stars.rotation.y = this.time * 0.004;
-    this.bloom.strength = 0.75 + this.pulse * 0.2;
+    this.boostT = Math.max(0, (this.boostT || 0) - dt * 1.5);
+    this.bloom.strength = 0.75 + this.pulse * 0.2 + this.boostT * 0.6;
+    // camera "warp": field of view widens as you go faster
+    const fast = Math.min(1, Math.max(0, (scrollSpeed - 13) / 17));
+    const fov = this.baseFov + fast * 9 + this.boostT * 6;
+    if (Math.abs(fov - this.camera.fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
 
     this.updateParticles(dt);
     this.decor.update(dt, scrollSpeed, this.pulse, this.beatCount);
@@ -672,7 +685,8 @@ export class World {
     this.composer.setSize(w, h);
     this.camera.aspect = w / h;
     // keep the play area visible on narrow screens
-    this.camera.fov = w / h < 1.2 ? 60 * Math.min(1.7, 1.2 / (w / h)) : 60;
+    this.baseFov = w / h < 1.2 ? 60 * Math.min(1.7, 1.2 / (w / h)) : 60;
+    this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
   }
 }

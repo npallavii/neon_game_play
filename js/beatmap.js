@@ -47,9 +47,12 @@ function mulberry32(a) {
   };
 }
 
-export function generateBeatmap({ bpm, offset = 0, totalBeats, difficulty, seed = Date.now() }) {
+/**
+ * timeOf(beat) -> seconds. difficulty: easy | medium | hard | ramp.
+ * "ramp" works like an endless runner: calm at first, busier as the speed rises.
+ */
+export function generateBeatmap({ timeOf, totalBeats, difficulty, seed = Date.now() }) {
   const rng = mulberry32(seed);
-  const spb = 60 / bpm;
   const startBeat = 8;           // 2 bars of intro / countdown
   const endBeat = totalBeats - 8; // leave room for the outro
   const notes = [];
@@ -59,7 +62,13 @@ export function generateBeatmap({ bpm, offset = 0, totalBeats, difficulty, seed 
   for (let b = startBeat; b + 8 <= endBeat; b += 8, phrase++) {
     const progress = (b - startBeat) / Math.max(1, endBeat - startBeat);
     let pool;
-    if (difficulty === 'easy') pool = phrase % 4 === 3 ? REST : EASY;
+    if (difficulty === 'ramp') {
+      pool = progress < 0.15 ? REST
+        : progress < 0.4 ? EASY
+        : progress < 0.65 ? (phrase % 2 ? MEDIUM : EASY)
+        : progress < 0.85 ? MEDIUM
+        : (phrase % 3 === 2 ? HARD : MEDIUM);
+    } else if (difficulty === 'easy') pool = phrase % 4 === 3 ? REST : EASY;
     else if (difficulty === 'medium') pool = progress < 0.2 ? EASY : MEDIUM;
     else pool = progress < 0.15 ? EASY : progress < 0.35 ? MEDIUM : [...MEDIUM, ...HARD, ...HARD];
 
@@ -70,7 +79,7 @@ export function generateBeatmap({ bpm, offset = 0, totalBeats, difficulty, seed 
 
     for (const [off, move] of pattern) {
       const beat = b + off;
-      notes.push({ move, beat, time: offset + beat * spb });
+      notes.push({ move, beat, time: timeOf(beat) });
     }
   }
   notes.forEach((n, i) => (n.id = i));

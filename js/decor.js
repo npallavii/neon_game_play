@@ -15,6 +15,7 @@ export class Decor {
     this.buildPalms();
     this.buildGems();
     this.buildPlanet();
+    this.buildStreaks();
     this.shooting = [];
     this.nextShoot = 2;
     this.confettis = [];
@@ -95,6 +96,29 @@ export class Decor {
       this.scene.add(g);
       this.gems.push(g);
     }
+  }
+
+  // ---------- Speed lines that rush past when you go fast ----------
+  buildStreaks() {
+    const n = 90;
+    this.streaks = [];
+    for (let i = 0; i < n; i++) this.streaks.push(this.newStreak({}, true));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 6), 3));
+    this.streakLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+      color: glow(0xbff8ff, 1.6), transparent: true, opacity: 0, depthWrite: false,
+      blending: THREE.AdditiveBlending, toneMapped: false,
+    }));
+    this.streakLines.frustumCulled = false;
+    this.scene.add(this.streakLines);
+  }
+
+  newStreak(s, anywhere = false) {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    s.x = side * (2.8 + Math.random() * 7);
+    s.y = 0.3 + Math.random() * 6;
+    s.z = anywhere ? -Math.random() * 100 : -90 - Math.random() * 20;
+    return s;
   }
 
   // ---------- Ringed planet + moon in the sky ----------
@@ -201,6 +225,19 @@ export class Decor {
     }
 
     this.planet.rotation.y += dt * 0.05;
+
+    const fast = Math.min(1, Math.max(0, (scroll - 15) / 13));
+    this.streakLines.material.opacity = fast * 0.75;
+    if (fast > 0) {
+      const len = 1.5 + scroll * 0.18;
+      const arr = this.streakLines.geometry.attributes.position.array;
+      this.streaks.forEach((st, i) => {
+        st.z += scroll * 1.8 * dt;
+        if (st.z > 5) this.newStreak(st);
+        arr.set([st.x, st.y, st.z, st.x, st.y, st.z - len], i * 6);
+      });
+      this.streakLines.geometry.attributes.position.needsUpdate = true;
+    }
 
     this.nextShoot -= dt;
     if (this.nextShoot <= 0) { this.shootStar(); this.nextShoot = 3 + Math.random() * 5; }

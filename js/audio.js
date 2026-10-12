@@ -3,8 +3,8 @@
 
 export const TRACKS = [
   {
-    id: 'warmup', name: 'Neon Warm-Up', bpm: 100, bars: 48, diff: 'easy', approach: 2.3, color: '#00f0ff',
-    desc: 'Gentle punches & reaches',
+    id: 'warmup', name: 'Neon Warm-Up', bpm: 96, bpmEnd: 136, bars: 64, diff: 'ramp', color: '#00f0ff',
+    desc: 'Starts slow, gets faster and faster!',
     chords: [
       { root: 45, notes: [57, 60, 64] }, // Am
       { root: 41, notes: [57, 60, 65] }, // F
@@ -15,6 +15,38 @@ export const TRACKS = [
 ];
 
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+
+/** Constant-tempo map (used for your own songs). */
+export function linearTempo(bpm, offset = 0) {
+  const spb = 60 / bpm;
+  return {
+    timeOf: beat => offset + beat * spb,
+    beatAt: t => (t - offset) / spb,
+    bpmAt: () => bpm,
+  };
+}
+
+/** Tempo map from per-bar durations (the music speeds up bar by bar). */
+function barTempo(barStart, barDur) {
+  const last = barDur.length - 1;
+  const barAtTime = t => {
+    let lo = 0, hi = last;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (barStart[m] <= t) lo = m; else hi = m - 1; }
+    return lo;
+  };
+  return {
+    timeOf: beat => {
+      const bar = Math.max(0, Math.min(last, Math.floor(beat / 4)));
+      return barStart[bar] + ((beat - bar * 4) * barDur[bar]) / 4;
+    },
+    beatAt: t => {
+      if (t < 0) return (t / barDur[0]) * 4;
+      const bar = barAtTime(t);
+      return bar * 4 + ((t - barStart[bar]) / barDur[bar]) * 4;
+    },
+    bpmAt: t => 240 / barDur[barAtTime(Math.max(0, t))],
+  };
+}
 
 export class AudioEngine {
   constructor() {
@@ -110,12 +142,25 @@ export class AudioEngine {
   playSynth(track) {
     this.stop();
     this.track = track;
-    this.spb = 60 / track.bpm;
+    // Tempo rises smoothly from bpm to bpmEnd, bar by bar (intro/outro stay put).
+    const end = track.bpmEnd ?? track.bpm;
+    this.barStart = [];
+    this.barDur = [];
+    let t = 0;
+    for (let b = 0; b < track.bars; b++) {
+      const k = Math.min(1, Math.max(0, (b - 2) / (track.bars - 8)));
+      const bpm = track.bpm + (end - track.bpm) * k;
+      this.barStart.push(t);
+      this.barDur.push(240 / bpm);
+      t += 240 / bpm;
+    }
+    this.tempo = barTempo(this.barStart, this.barDur);
+    this.spb = this.barDur[0] / 4;
     this.stepDur = this.spb / 4;
     this.step = 0;
     this.totalSteps = track.bars * 16;
     this.startAt = this.ctx.currentTime + 0.5;
-    this.duration = track.bars * 4 * this.spb;
+    this.duration = t;
     this.timer = setInterval(() => this.schedule(), 25);
     this.schedule();
   }
@@ -135,12 +180,14 @@ export class AudioEngine {
     src.start(this.startAt);
     this.source = src;
     this.duration = buffer.duration;
+    this.tempo = null;
   }
 
   schedule() {
     const ahead = this.ctx.currentTime + 0.15;
     while (this.step < this.totalSteps) {
-      const t = this.startAt + this.step * this.stepDur;
+      const bar = Math.floor(this.step / 16);
+      const t = this.startAt + this.barStart[bar] + ((this.step % 16) * this.barDur[bar]) / 16;
       if (t > ahead) break;
       this.playStep(this.step, t);
       this.step++;
@@ -155,6 +202,8 @@ export class AudioEngine {
     const tr = this.track;
     const bar = Math.floor(s / 16);
     const st = s % 16;
+    this.spb = this.barDur[bar] / 4;
+    this.stepDur = this.spb / 4;
     const chord = tr.chords[bar % tr.chords.length];
     const intro = bar < 2;
     const outro = bar >= tr.bars - 2;
@@ -401,6 +450,36 @@ export class AudioEngine {
     o.connect(lp).connect(g).connect(this.sfx);
     o.start(t);
     o.stop(t + 0.3);
+  }
+
+  /** Rising whoosh for "speed up!" */
+  sfxWhoosh() {
+    const c = this.ctx;
+    const t = c.currentTime;
+    const n = c.createBufferSource();
+    n.buffer = this.noise;
+    const bp = c.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 2;
+    bp.frequency.setValueAtTime(300, t);
+    bp.frequency.exponentialRampToValueAtTime(5000, t + 0.7);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.45);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+    n.connect(bp).connect(g).connect(this.sfx);
+    n.start(t);
+    n.stop(t + 0.85);
+    [0, 4, 7, 12].forEach((iv, i) => {
+      const o = c.createOscillator();
+      o.type = 'square';
+      o.frequency.value = mtof(72 + iv);
+      const og = c.createGain();
+      this.env(og, t + 0.3 + i * 0.07, 0.08, 0.003, 0.12);
+      o.connect(og).connect(this.sfx);
+      o.start(t + 0.3 + i * 0.07);
+      o.stop(t + 0.5 + i * 0.07);
+    });
   }
 
   sfxUi() {

@@ -48,6 +48,7 @@ Press **P** or **Esc** to pause. You can re-calibrate from the pause menu.
 
 ## Tuning
 
+- **How fast the run gets:** change `SPEED_START`, `SPEED_END` and `SPEED_LEVELS` in `js/main.js` for block speed. For the music, change `bpm` (start) and `bpmEnd` (end) in `js/audio.js`.
 - **Hits feel late or early:** change `POSE_LATENCY`, `EARLY` and `LATE` in `js/main.js`.
 - **A move is too hard or too easy to trigger:** change its thresholds in `checkMove()` in `js/moves.js`. Distances there are in shoulder-widths.
 - **New choreography:** add patterns to the `EASY`, `MEDIUM` or `HARD` lists in `js/beatmap.js`. Each pattern is a list of `[beatOffset, move]` pairs within 8 beats.

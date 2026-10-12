@@ -371,3 +371,19 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .res-msg { font-size: 26px; font-weight: 700; color: #fff; text-shadow: 0 0 12px var(--pink); margin-bottom: 8px; }
 .grade-row { font-family: "Orbitron"; font-size: 12px; letter-spacing: 0.3em; color: var(--muted); }
 .results .grade-row .grade { font-size: 30px; vertical-align: middle; margin-left: 6px; }
+
+/* ---------- Speed meter ---------- */
+.speed { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+#speedBars { display: inline-flex; gap: 3px; align-items: flex-end; }
+#speedBars i { display: block; width: 9px; border-radius: 2px; background: rgba(255, 255, 255, 0.15); transition: background 0.2s, box-shadow 0.2s; }
+#speedBars i:nth-child(1) { height: 8px; }
+#speedBars i:nth-child(2) { height: 11px; }
+#speedBars i:nth-child(3) { height: 14px; }
+#speedBars i:nth-child(4) { height: 17px; }
+#speedBars i:nth-child(5) { height: 20px; }
+#speedBars i.on:nth-child(1) { background: #39ff88; box-shadow: 0 0 8px #39ff88; }
+#speedBars i.on:nth-child(2) { background: #b6ff3b; box-shadow: 0 0 8px #b6ff3b; }
+#speedBars i.on:nth-child(3) { background: #ffe14d; box-shadow: 0 0 8px #ffe14d; }
+#speedBars i.on:nth-child(4) { background: #ff9a1f; box-shadow: 0 0 8px #ff9a1f; }
+#speedBars i.on:nth-child(5) { background: #ff3b6b; box-shadow: 0 0 10px #ff3b6b; }
+#speedVal { font-family: "Orbitron"; font-weight: 900; font-size: 18px; color: #fff; text-shadow: 0 0 10px var(--yellow); min-width: 52px; }

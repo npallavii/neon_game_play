@@ -1,5 +1,5 @@
-import { World, SPEED } from './world.js';
-import { AudioEngine, TRACKS } from './audio.js';
+import { World } from './world.js';
+import { AudioEngine, TRACKS, linearTempo } from './audio.js';
 import { generateBeatmap } from './beatmap.js';
 import { PoseTracker, Calibrator, VirtualBody, BodyMapper, toBody, drawCamSkeleton } from './pose.js';
 import { Coach } from './coach.js';
@@ -14,6 +14,10 @@ const LATE = 0.35;          // how late a move may count (s)
 const MEMORY = 0.15;        // a move detected this recently still counts (catches quick punches between frames)
 const GRADES = [['perfect', 0.12, 300], ['great', 0.22, 200], ['good', Infinity, 100]];
 const SPAWN_DISTANCE = 75;  // metres ahead where blocks appear
+// Like an endless runner: the run starts slow and keeps getting faster.
+const SPEED_START = 13;     // metres / second at the start
+const SPEED_END = 30;       // metres / second at the end
+const SPEED_LEVELS = 5;     // "SPEED UP!" moments during a run
 
 // ---------------- Core objects ----------------
 let world;
@@ -139,7 +143,7 @@ function songFromSettings() {
   return {
     id: 'custom', name: customName, bpm, buffer: customBuffer,
     offset: Math.max(0, Number($('customOffset').value) || 0),
-    diff, approach: { easy: 2.3, medium: 2.0, hard: 1.7 }[diff],
+    diff,
   };
 }
 
@@ -191,21 +195,25 @@ function recalibrate() {
 
 function beginSong() {
   const song = pendingSong;
-  let totalBeats;
+  let totalBeats, tempo;
   const offset = song.offset || 0;
   if (song.buffer) {
     audio.playBuffer(song.buffer);
     totalBeats = Math.floor(((song.buffer.duration - offset) * song.bpm) / 60);
+    tempo = linearTempo(song.bpm, offset);
   } else {
     audio.playSynth(song);
     totalBeats = song.bars * 4;
+    tempo = audio.tempo;
   }
-  const notes = generateBeatmap({ bpm: song.bpm, offset, totalBeats, difficulty: song.diff });
+  const notes = generateBeatmap({ timeOf: tempo.timeOf, totalBeats, difficulty: song.diff });
   world.clearNotes();
-  world.speed = 44 / song.approach;
+  world.speed = SPEED_START;
   game = {
-    song, notes, offset,
-    spb: 60 / song.bpm,
+    song, notes, tempo,
+    rampStart: tempo.timeOf(8),
+    rampEnd: notes.length ? notes[notes.length - 1].time : audio.duration,
+    level: 1,
     duration: audio.duration,
     next: 0,
     score: 0, combo: 0, maxCombo: 0,
@@ -217,6 +225,7 @@ function beginSong() {
   };
   $('trackName').textContent = song.name.toUpperCase();
   updateHud(true);
+  updateSpeedMeter(1, 1);
   showScreen(null);
   $('hud').classList.remove('hidden');
   $('coach').classList.remove('hidden');
@@ -360,6 +369,15 @@ function judge(note, grade, pts = 0) {
   updateHud();
 }
 
+let speedCache = '';
+function updateSpeedMeter(level, mult) {
+  const key = level + ':' + mult.toFixed(1);
+  if (key === speedCache) return;
+  speedCache = key;
+  $('speedVal').textContent = 'x' + mult.toFixed(1);
+  document.querySelectorAll('#speedBars i').forEach((el, i) => el.classList.toggle('on', i < level));
+}
+
 let hudCache = {};
 function updateHud(force) {
   const g = game;
@@ -373,7 +391,20 @@ function updateHud(force) {
 function updateGame(dt, body, px) {
   const g = game;
   const t = audio.songTime();
-  const beatPos = (t - g.offset) / g.spb;
+  const beatPos = g.tempo.beatAt(t);
+  const spb = 60 / g.tempo.bpmAt(t);
+
+  // Speed ramps up through the run, with a "SPEED UP!" moment at each level
+  const ramp = Math.min(1, Math.max(0, (t - g.rampStart) / (g.rampEnd - g.rampStart)));
+  world.speed = SPEED_START + (SPEED_END - SPEED_START) * ramp;
+  const level = Math.min(SPEED_LEVELS, 1 + Math.floor(ramp * SPEED_LEVELS + 1e-6));
+  if (level > g.level) {
+    g.level = level;
+    showBig('⚡ SPEED UP! ⚡');
+    audio.sfxWhoosh();
+    world.boost();
+  }
+  updateSpeedMeter(level, world.speed / SPEED_START);
   const beatPhase = beatPos >= 0 ? beatPos - Math.floor(beatPos) : null;
 
   // Countdown during the intro
@@ -413,7 +444,7 @@ function updateGame(dt, body, px) {
     }
   }
   world.updateNotes(t);
-  coach.update(dt, g.notes, t, g.spb, beatPhase);
+  coach.update(dt, g.notes, t, spb, beatPhase);
   $('progressFill').style.width = Math.min(100, (t / g.duration) * 100) + '%';
 
   // Tracking-lost warning
