@@ -267,6 +267,18 @@ function finish() {
   const acc = g.points / (300 * total);
   const grade = acc >= 0.92 ? 'S' : acc >= 0.8 ? 'A' : acc >= 0.65 ? 'B' : acc >= 0.5 ? 'C' : 'D';
   $('grade').textContent = grade;
+  const stars = acc >= 0.85 ? 3 : acc >= 0.65 ? 2 : acc >= 0.35 ? 1 : 0;
+  document.querySelectorAll('#stars .star').forEach((el, i) => {
+    el.classList.toggle('on', i < stars);
+    el.style.animationDelay = 0.25 + i * 0.3 + 's';
+  });
+  $('resMsg').textContent = [
+    "Good try! Let's go again! 💪",
+    'Nice moves! Keep going! 🙌',
+    'Awesome workout! ⚡',
+    "You're a SUPERSTAR! 🌟",
+  ][stars];
+  if (stars >= 2) { world.confetti(); setTimeout(() => world.confetti(), 700); }
   $('resTrack').textContent = g.song.name.toUpperCase();
   $('resScore').textContent = g.score.toLocaleString();
   $('sPerfect').textContent = g.counts.perfect;
@@ -298,6 +310,13 @@ function popup(text, cls, pos) {
   setTimeout(() => d.remove(), 720);
 }
 
+const PRAISE = {
+  perfect: ['PERFECT! ⭐', 'AMAZING! ⭐', 'WOW! ⭐', 'SUPER! ⭐'],
+  great: ['GREAT!', 'NICE!', 'COOL!', 'YEAH!'],
+  good: ['GOOD!', 'OK!'],
+};
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
 function showBig(text) {
   const el = $('bigText');
   el.textContent = text;
@@ -315,7 +334,7 @@ function judge(note, grade, pts = 0) {
     g.counts.miss++;
     world.missNote(note);
     audio.sfxMiss();
-    popup('MISS', 'miss', where);
+    popup(pick(['OOPS!', 'MISS', 'TRY AGAIN!']), 'miss', where);
     const v = $('vignette');
     v.classList.add('hurt');
     setTimeout(() => v.classList.remove('hurt'), 180);
@@ -327,9 +346,13 @@ function judge(note, grade, pts = 0) {
     g.points += pts;
     g.counts[grade]++;
     world.hitNote(note, grade);
+    world.cheer();
     audio.sfxHit(grade);
-    popup(grade.toUpperCase() + '!', grade, where);
-    if (g.combo % 25 === 0) showBig(g.combo + ' COMBO!');
+    popup(pick(PRAISE[grade]), grade, where);
+    if (g.combo % 10 === 0) {
+      showBig(`🔥 ${g.combo} COMBO!`);
+      world.confetti();
+    }
     const c = $('combo');
     c.classList.add('bump');
     setTimeout(() => c.classList.remove('bump'), 90);

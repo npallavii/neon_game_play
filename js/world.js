@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { MOVES } from './moves.js';
 import { BONES } from './pose.js';
+import { Decor } from './decor.js';
 
 // Body space -> world: 1 body unit (shoulder width) = S metres, shoulders at height OY.
 export const S = 0.5;
@@ -53,6 +54,9 @@ export class World {
     this.buildRails();
     this.buildAvatar();
     this.buildParticles();
+    this.decor = new Decor(this.scene);
+    this.beatCount = 0;
+    this.lastPhase = 0;
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -133,11 +137,14 @@ export class World {
       uniforms: {
         uOffset: { value: 0 },
         uPulse: { value: 0 },
+        uBeat: { value: 0 },
         uFog: { value: FOG },
       },
       vertexShader: `varying vec3 vPos; void main(){ vec4 w = modelMatrix * vec4(position,1.0); vPos = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
       fragmentShader: `
-        varying vec3 vPos; uniform float uOffset; uniform float uPulse; uniform vec3 uFog;
+        varying vec3 vPos; uniform float uOffset; uniform float uPulse; uniform float uBeat; uniform vec3 uFog;
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        vec3 hue(float h){ return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
         void main(){
           vec2 g = vec2(vPos.x, vPos.z - uOffset) / 2.0;
           vec2 fw = fwidth(g) * 1.2;
@@ -150,6 +157,15 @@ export class World {
           vec3 base = vec3(0.025, 0.0, 0.06) + vec3(0.25, 0.0, 0.35) * lane;
           float nearFade = smoothstep(0.0, 12.0, d) * 0.6 + 0.4;
           vec3 col = base + lc * line * nearFade * (0.75 + uPulse * 0.5);
+          // light-up rainbow dance floor on the track
+          vec2 cell = floor(g);
+          vec2 inTile = fract(g);
+          float tile = step(0.07, inTile.x) * step(inTile.x, 0.93) * step(0.07, inTile.y) * step(inTile.y, 0.93);
+          float onTrack = step(abs(vPos.x), 3.0);
+          float lit = step(0.55, hash(cell + vec2(floor(uBeat), 0.0)));
+          vec3 tc = hue(fract(cell.x * 0.13 + cell.y * 0.07 + uBeat * 0.05));
+          float fadeT = 1.0 - smoothstep(20.0, 80.0, d);
+          col += tc * tile * onTrack * lit * fadeT * (0.22 + uPulse * 0.45);
           float fog = smoothstep(30.0, 170.0, d);
           gl_FragColor = vec4(mix(col, uFog, fog), 1.0);
         }`,
@@ -262,10 +278,52 @@ export class World {
       this.avatar.add(m);
       this.joints[n] = m;
     }
-    this.head = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.022, 8, 32), boneMat);
+    this.faces = { happy: this.faceSprite(false), yay: this.faceSprite(true) };
+    this.head = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.faces.happy, transparent: true, depthWrite: false, toneMapped: false }));
+    this.head.scale.set(0.42, 0.42, 1);
     this.avatar.add(this.head);
+    this.moodUntil = 0;
     this.avatar.visible = false;
     this._v = new THREE.Vector3();
+  }
+
+  faceSprite(excited) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.shadowColor = '#00e5ff';
+    g.shadowBlur = 10;
+    g.lineWidth = 8;
+    g.strokeStyle = '#7ff6ff';
+    g.fillStyle = 'rgba(0, 229, 255, 0.18)';
+    g.beginPath(); g.arc(64, 64, 52, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#ffffff';
+    g.strokeStyle = '#ffffff';
+    g.lineCap = 'round';
+    if (excited) {
+      // star eyes + big open smile
+      for (const x of [44, 84]) star(g, x, 54, 11);
+      g.fillStyle = '#ff6ad5';
+      g.beginPath(); g.arc(64, 74, 22, 0, Math.PI); g.closePath(); g.fill();
+    } else {
+      for (const x of [46, 82]) { g.beginPath(); g.arc(x, 54, 7, 0, Math.PI * 2); g.fill(); }
+      g.lineWidth = 7;
+      g.beginPath(); g.arc(64, 70, 22, 0.2 * Math.PI, 0.8 * Math.PI); g.stroke();
+      g.fillStyle = 'rgba(255, 106, 213, 0.6)';
+      for (const x of [30, 98]) { g.beginPath(); g.arc(x, 74, 8, 0, Math.PI * 2); g.fill(); }
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+
+  /** Show the excited face for a moment (after a hit). */
+  cheer() {
+    this.moodUntil = this.time + 0.5;
+  }
+
+  confetti() {
+    this.decor.confetti();
   }
 
   /** body: pose dict in body space or null */
@@ -290,6 +348,9 @@ export class World {
     if (P.nose) {
       this.head.visible = true;
       this.head.position.copy(P.nose);
+      this.head.position.y += 0.04;
+      const face = this.time < this.moodUntil ? this.faces.yay : this.faces.happy;
+      if (this.head.material.map !== face) { this.head.material.map = face; this.head.material.needsUpdate = true; }
     } else this.head.visible = false;
     const c = P.neck;
     if (c) this.floorGlow.position.x = c.x;
@@ -571,6 +632,9 @@ export class World {
     this.time += dt;
     this.gridOffset = (this.gridOffset + dt * scrollSpeed) % 2000;
     this.pulse = beatPhase == null ? 0 : Math.exp(-beatPhase * 5);
+    if (beatPhase != null && beatPhase < this.lastPhase) this.beatCount++;
+    this.lastPhase = beatPhase ?? 0;
+    this.grid.material.uniforms.uBeat.value = this.beatCount;
 
     this.grid.material.uniforms.uOffset.value = this.gridOffset;
     this.grid.material.uniforms.uPulse.value = this.pulse;
@@ -582,6 +646,7 @@ export class World {
     this.bloom.strength = 0.75 + this.pulse * 0.2;
 
     this.updateParticles(dt);
+    this.decor.update(dt, scrollSpeed, this.pulse, this.beatCount);
 
     // camera sway + shake
     this.shake = Math.max(0, this.shake - dt);
@@ -610,6 +675,17 @@ export class World {
     this.camera.fov = w / h < 1.2 ? 60 * Math.min(1.7, 1.2 / (w / h)) : 60;
     this.camera.updateProjectionMatrix();
   }
+}
+
+function star(g, x, y, r) {
+  g.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rr = i % 2 ? r * 0.45 : r;
+    g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+  }
+  g.closePath();
+  g.fill();
 }
 
 function roundRect(g, x, y, w, h, r) {

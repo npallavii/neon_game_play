@@ -310,3 +310,64 @@ button { font: inherit; color: inherit; cursor: pointer; }
   .hud-value { font-size: 26px; }
   .combo { font-size: 40px; }
 }
+
+/* ---------- Kid-friendly extras ---------- */
+.floaties { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+.floaties span {
+  position: absolute; left: var(--x); top: var(--y);
+  font-size: clamp(24px, 4vw, 40px);
+  filter: drop-shadow(0 0 10px rgba(255, 106, 213, 0.8));
+  animation: floaty 4.5s ease-in-out infinite;
+  animation-delay: var(--d);
+  opacity: 0.85;
+}
+@keyframes floaty {
+  0%, 100% { transform: translateY(0) rotate(-8deg) scale(1); }
+  50% { transform: translateY(-22px) rotate(8deg) scale(1.12); }
+}
+.menu-inner { position: relative; z-index: 1; }
+
+.logo { animation: logoBounce 2.4s ease-in-out infinite; }
+@keyframes logoBounce {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-6px) scale(1.02); }
+}
+.start { animation: startPulse 1.6s ease-in-out infinite; }
+.start.small { animation: none; }
+@keyframes startPulse {
+  0%, 100% { box-shadow: 0 0 24px rgba(255, 43, 214, 0.7), 0 0 60px rgba(138, 92, 255, 0.4); }
+  50% { box-shadow: 0 0 36px rgba(255, 43, 214, 1), 0 0 90px rgba(0, 200, 255, 0.6); }
+}
+
+.tagline, .pop, #bigText, #coachLabel, .res-msg, .track .t-name, .mode strong {
+  font-family: "Fredoka", "Rajdhani", sans-serif;
+}
+.pop { font-size: 34px; font-weight: 700; animation: popKid 0.8s cubic-bezier(.2, 1.6, .4, 1) forwards; }
+.pop.miss { font-size: 24px; }
+@keyframes popKid {
+  0% { opacity: 0; transform: translate(-50%, -30%) scale(0.3) rotate(-12deg); }
+  20% { opacity: 1; transform: translate(-50%, -50%) scale(1.25) rotate(4deg); }
+  45% { transform: translate(-50%, -60%) scale(1) rotate(0deg); }
+  100% { opacity: 0; transform: translate(-50%, -150%) scale(0.95); }
+}
+#bigText { font-weight: 700; }
+#coachLabel { font-size: 22px; font-weight: 700; }
+
+.stars { display: flex; justify-content: center; align-items: flex-end; gap: 6px; margin-bottom: 6px; }
+.stars .star {
+  font-size: 64px; line-height: 1;
+  color: rgba(255, 255, 255, 0.14);
+}
+.stars .star.big { font-size: 92px; }
+.stars .star.on {
+  color: #ffd23f;
+  text-shadow: 0 0 16px #ffd23f, 0 0 40px #ff9a1f;
+  animation: starPop 0.6s cubic-bezier(.2, 1.8, .4, 1) both;
+}
+@keyframes starPop {
+  0% { transform: scale(0) rotate(-90deg); opacity: 0; }
+  100% { transform: scale(1) rotate(0); opacity: 1; }
+}
+.res-msg { font-size: 26px; font-weight: 700; color: #fff; text-shadow: 0 0 12px var(--pink); margin-bottom: 8px; }
+.grade-row { font-family: "Orbitron"; font-size: 12px; letter-spacing: 0.3em; color: var(--muted); }
+.results .grade-row .grade { font-size: 30px; vertical-align: middle; margin-left: 6px; }

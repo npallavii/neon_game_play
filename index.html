@@ -6,7 +6,7 @@
   <title>Neon Pulse</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/style.css" />
   <script type="importmap">
     {
@@ -58,6 +58,11 @@
 
   <!-- Menu -->
   <section id="menu" class="screen">
+    <div class="floaties" aria-hidden="true">
+      <span style="--x:6%;--y:18%;--d:0s">⭐</span><span style="--x:90%;--y:14%;--d:1.2s">🎵</span>
+      <span style="--x:12%;--y:72%;--d:2.1s">💜</span><span style="--x:86%;--y:66%;--d:.6s">⚡</span>
+      <span style="--x:20%;--y:40%;--d:3s">✨</span><span style="--x:78%;--y:38%;--d:1.8s">🎶</span>
+    </div>
     <div class="menu-inner">
       <h1 class="logo">NEON<span>PULSE</span></h1>
       <p class="tagline">Punch, duck, jump and dance to the beat — your webcam is the controller.</p>
@@ -134,7 +139,9 @@
   <!-- Results -->
   <section id="results" class="screen hidden">
     <div class="panel results">
-      <div id="grade" class="grade">S</div>
+      <div id="stars" class="stars"><span class="star">★</span><span class="star big">★</span><span class="star">★</span></div>
+      <div id="resMsg" class="res-msg"></div>
+      <div class="grade-row">GRADE <span id="grade" class="grade">S</span></div>
       <div id="resTrack" class="hud-label"></div>
       <div id="resScore" class="res-score">0</div>
       <div id="resBest" class="res-best"></div>

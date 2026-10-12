@@ -97,6 +97,14 @@ export class Coach {
     g.fillStyle = 'rgba(255,43,214,0.25)';
     g.lineWidth = 5;
     g.beginPath(); g.arc(nose[0], nose[1] - 4, 17, 0, Math.PI * 2); g.fill(); g.stroke();
+    // friendly face
+    g.shadowBlur = 0;
+    g.fillStyle = '#fff';
+    for (const dx of [-6, 6]) { g.beginPath(); g.arc(nose[0] + dx, nose[1] - 7, 2.6, 0, Math.PI * 2); g.fill(); }
+    g.strokeStyle = '#fff';
+    g.lineWidth = 2.5;
+    g.beginPath(); g.arc(nose[0], nose[1] - 3, 7, 0.15 * Math.PI, 0.85 * Math.PI); g.stroke();
+    g.shadowBlur = 18;
     // hands
     g.fillStyle = '#fff';
     g.shadowColor = '#00f0ff';
