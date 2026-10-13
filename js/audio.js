@@ -117,9 +117,35 @@ export class AudioEngine {
     if (this.ctx.state !== 'running') await this.ctx.resume();
   }
 
-  /** Song time in seconds (0 = first beat), compensated for output latency. */
-  songTime() {
+  /** Raw song time from the audio hardware clock (advances in small uneven steps). */
+  rawSongTime() {
     return this.ctx.currentTime - (this.ctx.outputLatency || 0) - this.startAt;
+  }
+
+  /**
+   * Song time in seconds (0 = first beat), compensated for output latency.
+   * The audio clock ticks in chunks, which makes moving blocks judder; this
+   * runs a smooth high-resolution clock that is gently pulled onto the audio one.
+   */
+  songTime() {
+    const raw = this.rawSongTime();
+    const now = performance.now() / 1000;
+    if (this.ctx.state !== 'running' || this.clk == null) {
+      this.clk = raw;
+      this.clkAt = now;
+      return raw;
+    }
+    let t = this.clk + (now - this.clkAt);
+    const err = raw - t;
+    if (Math.abs(err) > 0.08) t = raw;   // big jump (tab was busy): snap
+    else t += err * 0.05;                // tiny drift: ease toward the audio clock
+    this.clk = t;
+    this.clkAt = now;
+    return t;
+  }
+
+  resetClock() {
+    this.clk = null;
   }
 
   stop() {
@@ -160,6 +186,7 @@ export class AudioEngine {
     this.step = 0;
     this.totalSteps = track.bars * 16;
     this.startAt = this.ctx.currentTime + 0.5;
+    this.resetClock();
     this.duration = t;
     this.timer = setInterval(() => this.schedule(), 25);
     this.schedule();
@@ -177,6 +204,7 @@ export class AudioEngine {
     src.buffer = buffer;
     src.connect(this.music);
     this.startAt = this.ctx.currentTime + 0.5;
+    this.resetClock();
     src.start(this.startAt);
     this.source = src;
     this.duration = buffer.duration;

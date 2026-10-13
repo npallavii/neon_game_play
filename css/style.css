@@ -75,7 +75,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: rgba(255, 255, 255, 0.12); overflow: hidden;
 }
 #progressFill {
-  height: 100%; width: 0%;
+  height: 100%; width: 100%;
+  transform: scaleX(0); transform-origin: left center; will-change: transform;
   background: linear-gradient(90deg, var(--cyan), var(--pink));
   box-shadow: 0 0 10px var(--pink);
 }

@@ -8,7 +8,7 @@ import { detectAll, POSES, GUARD, COACH_TEXT, clonePose, lerpPose } from './move
 const $ = id => document.getElementById(id);
 
 // ---------------- Tuning ----------------
-const POSE_LATENCY = 0.08;  // camera + model delay compensation (s)
+const CAMERA_LATENCY = 0.04; // camera capture delay (s); model delay is measured live
 const EARLY = 0.35;         // how early a move may count (s)
 const LATE = 0.35;          // how late a move may count (s)
 const MEMORY = 0.15;        // a move detected this recently still counts (catches quick punches between frames)
@@ -208,6 +208,7 @@ function beginSong() {
   }
   const notes = generateBeatmap({ timeOf: tempo.timeOf, totalBeats, difficulty: song.diff });
   world.clearNotes();
+  world.prewarm();
   world.speed = SPEED_START;
   game = {
     song, notes, tempo,
@@ -245,6 +246,7 @@ async function resume() {
   showScreen(null);
   state = 'play';
   await audio.ctx.resume();
+  audio.resetClock();
 }
 
 function toMenu() {
@@ -422,7 +424,7 @@ function updateGame(dt, body, px) {
 
   // Judge
   const camera = settings.mode === 'camera';
-  const jt = camera ? t - POSE_LATENCY : t;
+  const jt = camera ? t - Math.min(0.25, CAMERA_LATENCY + tracker.latency) : t;
   const base = camera ? calib : virtual.base;
   const active = detectAll(body, base);
   for (const m of active) g.lastTrue[m] = jt;
@@ -445,7 +447,7 @@ function updateGame(dt, body, px) {
   }
   world.updateNotes(t);
   coach.update(dt, g.notes, t, spb, beatPhase);
-  $('progressFill').style.width = Math.min(100, (t / g.duration) * 100) + '%';
+  $('progressFill').style.transform = `scaleX(${Math.min(1, Math.max(0, t / g.duration))})`;
 
   // Tracking-lost warning
   if (camera) {
@@ -509,6 +511,24 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => virtual.keyup(e.code));
 document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 
+// The camera gives ~30 poses/s but the screen draws 60+ frames/s. Easing the
+// avatar toward the newest pose every frame makes it glide instead of step.
+// (Hit detection still uses the real, un-eased pose.)
+const shown = {};
+let shownValid = false;
+function smoothForDisplay(body, dt) {
+  if (!body) { shownValid = false; return null; }
+  const k = shownValid ? 1 - Math.exp(-dt * 28) : 1;
+  for (const name in shown) if (!body[name]) delete shown[name];
+  for (const name in body) {
+    const b = body[name], s = shown[name];
+    if (!s) shown[name] = [b[0], b[1]];
+    else { s[0] += (b[0] - s[0]) * k; s[1] += (b[1] - s[1]) * k; }
+  }
+  shownValid = true;
+  return shown;
+}
+
 // ---------------- Main loop ----------------
 let last = performance.now();
 function frame(now) {
@@ -553,7 +573,7 @@ function frame(now) {
       break;
   }
   if (state === 'results') body = demo.pose;
-  world.setAvatar(body);
+  world.setAvatar(smoothForDisplay(body, dt));
   world.update(state === 'paused' ? 0 : dt, beatPhase, scroll);
 }
 
@@ -561,4 +581,4 @@ buildTracks();
 requestAnimationFrame(frame);
 
 // handy for debugging in the browser console
-window.neonDebug = { state: () => state, game: () => game, time: () => audio?.songTime() };
+window.neonDebug = { state: () => state, game: () => game, time: () => audio?.songTime(), tracker, world };

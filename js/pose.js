@@ -52,15 +52,18 @@ class OneEuro {
 export class PoseTracker {
   constructor(video) {
     this.video = video;
-    this.landmarker = null;
+    this.landmarker = null;   // main-thread fallback
+    this.worker = null;       // preferred: detection in a background thread
+    this.busy = false;
     this.lastVideoTime = -1;
     this.lastStamp = 0;
-    this.px = null;          // filtered pixel landmarks { name: {x, y, v} }
+    this.px = null;           // filtered pixel landmarks { name: {x, y, v} }
     this.lastSeen = 0;
     this.ready = false;
     this.filters = {};
     for (const n of NAMES) this.filters[n] = { x: new OneEuro(), y: new OneEuro() };
     this.fps = 0;
+    this.latency = 0.05;      // measured: frame grabbed -> landmarks ready (s)
   }
 
   async init(onStatus) {
@@ -69,64 +72,129 @@ export class PoseTracker {
     }
     if (!this.video.srcObject) {
       onStatus?.('Starting camera…', 'Allow camera access when your browser asks.');
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 60, min: 24 }, facingMode: 'user' },
-        audio: false,
-      });
+      let stream;
+      try {
+        // "ideal" values are preferences, never hard requirements, so any webcam works
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 60 }, facingMode: 'user' },
+          audio: false,
+        });
+      } catch (e) {
+        if (e?.name !== 'OverconstrainedError' && e?.name !== 'NotReadableError') throw e;
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
       this.video.srcObject = stream;
       await this.video.play();
     }
-    if (!this.landmarker) {
+    if (!this.worker && !this.landmarker) {
       onStatus?.('Loading motion tracking…', 'Downloading the pose model. The first time takes a few seconds.');
-      const { PoseLandmarker, FilesetResolver } = await import(`${MP_URL}/vision_bundle.mjs`);
-      const fileset = await FilesetResolver.forVisionTasks(`${MP_URL}/wasm`);
-      const opts = (model, delegate) => ({
-        baseOptions: { modelAssetPath: MODEL_URLS[model], delegate },
-        runningMode: 'VIDEO',
-        numPoses: 1,
-        minPoseDetectionConfidence: 0.6,
-        minPosePresenceConfidence: 0.6,
-        minTrackingConfidence: 0.6,
-      });
-      const attempts = [['full', 'GPU'], ['lite', 'GPU'], ['lite', 'CPU']];
-      for (const [model, delegate] of attempts) {
-        try {
-          this.landmarker = await PoseLandmarker.createFromOptions(fileset, opts(model, delegate));
-          this.modelName = `${model}/${delegate}`;
-          break;
-        } catch (e) {
-          console.warn(`Pose model ${model}/${delegate} failed`, e);
-        }
-      }
-      if (!this.landmarker) throw new Error('Could not load the motion-tracking model. Check your internet connection.');
+      if (!(await this.startWorker())) await this.startMainThread();
     }
     this.ready = true;
+  }
+
+  startWorker() {
+    if (typeof Worker === 'undefined' || typeof createImageBitmap === 'undefined') return Promise.resolve(false);
+    return new Promise(resolve => {
+      let w;
+      try {
+        w = new Worker(new URL('./pose-worker.js', import.meta.url));
+      } catch (e) {
+        console.warn('Pose worker unavailable', e);
+        return resolve(false);
+      }
+      const fail = why => { console.warn('Pose worker failed, using main thread:', why); w.terminate(); resolve(false); };
+      const timer = setTimeout(() => fail('timeout'), 30000);
+      w.onerror = e => { clearTimeout(timer); fail(e.message); };
+      w.onmessage = e => {
+        const m = e.data;
+        if (m.type === 'ready') {
+          clearTimeout(timer);
+          this.worker = w;
+          this.modelName = m.model + ' (worker)';
+          w.onmessage = ev => this.onWorkerResult(ev.data);
+          w.onerror = ev => console.warn('Pose worker error', ev.message);
+          resolve(true);
+        } else if (m.type === 'error') {
+          clearTimeout(timer);
+          fail(m.message);
+        }
+      };
+      w.postMessage({ type: 'init', mpUrl: MP_URL, models: MODEL_URLS });
+    });
+  }
+
+  async startMainThread() {
+    const { PoseLandmarker, FilesetResolver } = await import(`${MP_URL}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${MP_URL}/wasm`);
+    const opts = (model, delegate) => ({
+      baseOptions: { modelAssetPath: MODEL_URLS[model], delegate },
+      runningMode: 'VIDEO',
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.6,
+      minPosePresenceConfidence: 0.6,
+      minTrackingConfidence: 0.6,
+    });
+    for (const [model, delegate] of [['full', 'GPU'], ['lite', 'GPU'], ['lite', 'CPU']]) {
+      try {
+        this.landmarker = await PoseLandmarker.createFromOptions(fileset, opts(model, delegate));
+        this.modelName = `${model}/${delegate}`;
+        return;
+      } catch (e) {
+        console.warn(`Pose model ${model}/${delegate} failed`, e);
+      }
+    }
+    throw new Error('Could not load the motion-tracking model. Check your internet connection.');
   }
 
   get width() { return this.video.videoWidth || 640; }
   get height() { return this.video.videoHeight || 480; }
 
-  /** Run detection on the newest video frame. Returns filtered pixel landmarks or null. */
+  /** Call every frame. Returns the latest filtered pixel landmarks (or null). */
   update(now) {
     if (!this.ready || this.video.readyState < 2) return this.px;
     if (this.video.currentTime === this.lastVideoTime) return this.px;
-    this.lastVideoTime = this.video.currentTime;
 
+    if (this.worker) {
+      if (this.busy) return this.px; // still working on the previous frame
+      this.lastVideoTime = this.video.currentTime;
+      this.busy = true;
+      const ts = performance.now();
+      createImageBitmap(this.video).then(bitmap => {
+        this.worker.postMessage({ type: 'frame', bitmap, ts }, [bitmap]);
+      }).catch(() => { this.busy = false; });
+      return this.px;
+    }
+
+    this.lastVideoTime = this.video.currentTime;
     const res = this.landmarker.detectForVideo(this.video, now);
     const lm = res.landmarks?.[0];
-    const dt = this.lastStamp ? (now - this.lastStamp) / 1000 : 1 / 30;
-    this.lastStamp = now;
-    this.fps += (1 / Math.max(dt, 1e-3) - this.fps) * 0.1;
+    this.ingest(lm ? lm.map(q => [q.x, q.y, q.visibility ?? 1]) : null, now, now);
+    return this.px;
+  }
+
+  onWorkerResult(m) {
+    if (m.type !== 'result') return;
+    this.busy = false;
+    const now = performance.now();
+    this.latency += ((now - m.ts) / 1000 - this.latency) * 0.1;
+    this.ingest(m.lm, m.ts, now);
+  }
+
+  /** lm: array of [x, y, visibility] in MediaPipe order, or null. */
+  ingest(lm, ts, now) {
+    const dt = this.lastStamp ? Math.max(1e-3, (ts - this.lastStamp) / 1000) : 1 / 30;
+    this.lastStamp = ts;
+    this.fps += (1 / dt - this.fps) * 0.1;
     if (!lm) {
       if (now - this.lastSeen > 400) this.px = null;
-      return this.px;
+      return;
     }
     this.lastSeen = now;
     const W = this.width, H = this.height;
     const next = {};
     for (const name of NAMES) {
-      const p = lm[IDX[name]];
-      const v = p.visibility ?? 1;
+      const [x, y, v] = lm[IDX[name]];
       const f = this.filters[name];
       const prev = this.px?.[name];
       if (v < 0.15 && prev) {
@@ -134,10 +202,9 @@ export class PoseTracker {
         next[name] = { x: prev.x, y: prev.y, v: prev.v * 0.8 };
         continue;
       }
-      next[name] = { x: f.x.filter((1 - p.x) * W, dt), y: f.y.filter(p.y * H, dt), v };
+      next[name] = { x: f.x.filter((1 - x) * W, dt), y: f.y.filter(y * H, dt), v };
     }
     this.px = next;
-    return next;
   }
 
   stop() {

@@ -20,7 +20,11 @@ export class World {
   constructor(canvas) {
     this.canvas = canvas;
     const r = (this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }));
-    r.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    // Render resolution adapts to keep a steady frame rate (see adaptQuality).
+    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+    this.pixelRatio = this.maxPixelRatio;
+    r.setPixelRatio(this.pixelRatio);
+    this.perf = { avg: 1 / 60, timer: 0, goodFor: 0 };
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.toneMappingExposure = 1.0;
 
@@ -38,6 +42,7 @@ export class World {
     this.bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.8, 0.45, 0.4);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+    this.composer.setPixelRatio(this.pixelRatio);
 
     this.speed = SPEED;
     this.time = 0;
@@ -335,9 +340,12 @@ export class World {
   setAvatar(body) {
     if (!body) { this.avatar.visible = false; return; }
     this.avatar.visible = true;
-    const P = {};
-    for (const k in body) P[k] = bw(body[k][0], body[k][1], 0.25);
-    if (P.lSh && P.rSh) P.neck = P.lSh.clone().add(P.rSh).multiplyScalar(0.5);
+    // reuse vectors every frame (no garbage -> no GC stutter)
+    const V = (this._vec ??= {});
+    const P = (this._P ??= {});
+    for (const k in P) P[k] = null;
+    for (const k in body) P[k] = (V[k] ??= new THREE.Vector3()).set(body[k][0] * S, OY + body[k][1] * S, 0.25);
+    if (P.lSh && P.rSh) P.neck = (V.neck ??= new THREE.Vector3()).copy(P.lSh).add(P.rSh).multiplyScalar(0.5);
     for (const { a, b, m } of this.bones) {
       const p = P[a], q = P[b];
       if (!p || !q) { m.visible = false; continue; }
@@ -435,18 +443,24 @@ export class World {
     });
   }
 
+  sharedGeo(key, make) {
+    const c = (this.geoCache ??= new Map());
+    if (!c.has(key)) c.set(key, make());
+    return c.get(key);
+  }
+
   makeNoteMesh(note) {
     const m = MOVES[note.move];
     const group = new THREE.Group();
     const edgeMat = new THREE.LineBasicMaterial({ color: neon(m.color, 2.4), toneMapped: false, transparent: true });
     const fillMat = new THREE.MeshBasicMaterial({ color: m.color, transparent: true, opacity: 0.22, depthWrite: false });
     const addBox = (w, h, d) => {
-      const geo = new THREE.BoxGeometry(w, h, d);
+      const geo = this.sharedGeo(`box${w}/${h}/${d}`, () => new THREE.BoxGeometry(w, h, d));
       group.add(new THREE.Mesh(geo, fillMat));
-      group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat));
+      group.add(new THREE.LineSegments(this.sharedGeo(`edge${w}/${h}/${d}`, () => new THREE.EdgesGeometry(geo)), edgeMat));
     };
     const addFace = (tex, w, h, z) => {
-      const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({
+      const p = new THREE.Mesh(this.sharedGeo(`plane${w}/${h}`, () => new THREE.PlaneGeometry(w, h)), new THREE.MeshBasicMaterial({
         map: tex, transparent: true, depthWrite: false, toneMapped: false, color: new THREE.Color(1.6, 1.6, 1.6),
       }));
       p.position.z = z;
@@ -465,7 +479,7 @@ export class World {
         group.position.set(target.x, target.y, 0);
         group.userData.spin = (Math.random() - 0.5) * 0.6;
         // aim ring that waits at the hit plane
-        const ring = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.34, 48), new THREE.MeshBasicMaterial({
+        const ring = new THREE.Mesh(this.sharedGeo('aimRing', () => new THREE.RingGeometry(0.3, 0.34, 48)), new THREE.MeshBasicMaterial({
           color: neon(m.color, 2), toneMapped: false, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
         }));
         ring.position.copy(target);
@@ -542,8 +556,9 @@ export class World {
 
   removeNote(note) {
     this.scene.remove(note.mesh);
-    note.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); // cached textures stay alive
-    if (note.ring) { this.scene.remove(note.ring); note.ring.geometry.dispose(); note.ring.material.dispose(); }
+    // geometries and textures are shared/cached; only the per-block materials are freed
+    note.mesh.traverse(o => { if (o.material) o.material.dispose(); });
+    if (note.ring) { this.scene.remove(note.ring); note.ring.material.dispose(); }
     this.notes.delete(note);
   }
 
@@ -590,7 +605,7 @@ export class World {
   }
 
   shockwave(pos, color) {
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.25, 48), new THREE.MeshBasicMaterial({
+    const ring = new THREE.Mesh(this.sharedGeo('wave', () => new THREE.RingGeometry(0.22, 0.25, 48)), new THREE.MeshBasicMaterial({
       color: neon(color, 1.4), transparent: true, toneMapped: false, depthWrite: false, side: THREE.DoubleSide,
     }));
     ring.position.copy(pos);
@@ -623,7 +638,7 @@ export class World {
       w.ring.scale.setScalar(1 + k * 2.2);
       w.ring.material.opacity = Math.max(0, 1 - k);
       if (k >= 1) {
-        this.scene.remove(w.ring); w.ring.geometry.dispose(); w.ring.material.dispose();
+        this.scene.remove(w.ring); w.ring.material.dispose();
         return false;
       }
       return true;
@@ -659,6 +674,7 @@ export class World {
     }
 
     this.updateParticles(dt);
+    this.adaptQuality(dt);
     this.decor.update(dt, scrollSpeed, this.pulse, this.beatCount);
 
     // camera sway + shake
@@ -677,6 +693,40 @@ export class World {
   toScreen(v) {
     const p = v.clone().project(this.camera);
     return { x: (p.x * 0.5 + 0.5) * window.innerWidth, y: (-p.y * 0.5 + 0.5) * window.innerHeight };
+  }
+
+  /** Lower the render resolution when frames get slow, raise it again when there's headroom. */
+  adaptQuality(dt) {
+    const f = this.perf;
+    if (dt <= 0) return;
+    f.avg += (dt - f.avg) * 0.05;
+    f.timer += dt;
+    if (f.timer < 1.5) return;
+    f.timer = 0;
+    let next = this.pixelRatio;
+    if (f.avg > 1 / 50 && this.pixelRatio > 0.6) { next = Math.max(0.6, this.pixelRatio - 0.2); f.goodFor = 0; }
+    else if (f.avg < 1 / 57) {
+      f.goodFor += 1.5;
+      if (f.goodFor >= 6 && this.pixelRatio < this.maxPixelRatio) { next = Math.min(this.maxPixelRatio, this.pixelRatio + 0.1); f.goodFor = 0; }
+    } else f.goodFor = 0;
+    if (next !== this.pixelRatio) {
+      this.pixelRatio = next;
+      this.renderer.setPixelRatio(next);
+      this.composer.setPixelRatio(next);
+      this.resize();
+    }
+  }
+
+  /** Build every block type once up front so nothing stalls mid-song (shader compile / texture upload). */
+  prewarm() {
+    const temp = Object.keys(MOVES).map((move, i) => ({ move, id: -1 - i, time: -100 }));
+    for (const n of temp) this.spawnNote(n);
+    this.burst(new THREE.Vector3(0, -50, -5), 0xffffff, 4);
+    this.shockwave(new THREE.Vector3(0, -50, -5), 0xffffff);
+    this.decor.confetti(new THREE.Vector3(0, -50, -5), 4);
+    this.renderer.compile(this.scene, this.camera);
+    for (const tex of this.texCache.values()) this.renderer.initTexture(tex);
+    for (const n of temp) this.removeNote(n);
   }
 
   resize() {
