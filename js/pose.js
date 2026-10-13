@@ -57,11 +57,10 @@ export class PoseTracker {
     this.busy = false;
     this.lastVideoTime = -1;
     this.lastStamp = 0;
-    this.px = null;           // filtered pixel landmarks { name: {x, y, v} }
-    this.lastSeen = 0;
     this.ready = false;
-    this.filters = {};
-    for (const n of NAMES) this.filters[n] = { x: new OneEuro(), y: new OneEuro() };
+    this.numPlayers = 1;
+    // One slot per player: slot 0 = left side of the screen, slot 1 = right side.
+    this.slots = [0, 1].map(() => this.newSlot());
     this.fps = 0;
     this.latency = 0.05;      // measured: frame grabbed -> landmarks ready (s)
   }
@@ -120,7 +119,7 @@ export class PoseTracker {
           fail(m.message);
         }
       };
-      w.postMessage({ type: 'init', mpUrl: MP_URL, models: MODEL_URLS });
+      w.postMessage({ type: 'init', mpUrl: MP_URL, models: MODEL_URLS, numPoses: this.numPlayers });
     });
   }
 
@@ -130,7 +129,7 @@ export class PoseTracker {
     const opts = (model, delegate) => ({
       baseOptions: { modelAssetPath: MODEL_URLS[model], delegate },
       runningMode: 'VIDEO',
-      numPoses: 1,
+      numPoses: this.numPlayers,
       minPoseDetectionConfidence: 0.6,
       minPosePresenceConfidence: 0.6,
       minTrackingConfidence: 0.6,
@@ -146,6 +145,27 @@ export class PoseTracker {
     }
     throw new Error('Could not load the motion-tracking model. Check your internet connection.');
   }
+
+  newSlot() {
+    const filters = {};
+    for (const n of NAMES) filters[n] = { x: new OneEuro(), y: new OneEuro() };
+    return { px: null, lastSeen: 0, filters };
+  }
+
+  /** Track 1 or 2 people (2 = side-by-side versus mode). */
+  setPlayers(n) {
+    if (n === this.numPlayers) return;
+    this.numPlayers = n;
+    this.slots = [0, 1].map(() => this.newSlot());
+    if (this.worker) this.worker.postMessage({ type: 'options', numPoses: n });
+    else this.landmarker?.setOptions({ numPoses: n });
+  }
+
+  /** Filtered pixel landmarks of player 1 (solo mode). */
+  get px() { return this.slots[0].px; }
+
+  /** Filtered pixel landmarks of every player slot. */
+  get pxAll() { return this.slots.slice(0, this.numPlayers).map(s => s.px); }
 
   get width() { return this.video.videoWidth || 640; }
   get height() { return this.video.videoHeight || 480; }
@@ -168,8 +188,7 @@ export class PoseTracker {
 
     this.lastVideoTime = this.video.currentTime;
     const res = this.landmarker.detectForVideo(this.video, now);
-    const lm = res.landmarks?.[0];
-    this.ingest(lm ? lm.map(q => [q.x, q.y, q.visibility ?? 1]) : null, now, now);
+    this.ingest((res.landmarks || []).map(p => p.map(q => [q.x, q.y, q.visibility ?? 1])), now, now);
     return this.px;
   }
 
@@ -178,25 +197,51 @@ export class PoseTracker {
     this.busy = false;
     const now = performance.now();
     this.latency += ((now - m.ts) / 1000 - this.latency) * 0.1;
-    this.ingest(m.lm, m.ts, now);
+    this.ingest(m.lms, m.ts, now);
   }
 
-  /** lm: array of [x, y, visibility] in MediaPipe order, or null. */
-  ingest(lm, ts, now) {
+  /** lms: list of people, each an array of [x, y, visibility] in MediaPipe order. */
+  ingest(lms, ts, now) {
     const dt = this.lastStamp ? Math.max(1e-3, (ts - this.lastStamp) / 1000) : 1 / 30;
     this.lastStamp = ts;
     this.fps += (1 / dt - this.fps) * 0.1;
+
+    // Which person goes to which slot? Use the (mirrored) shoulder centre.
+    const cx = lm => 1 - (lm[IDX.lSh][0] + lm[IDX.rSh][0]) / 2;
+    const people = (lms || []).filter(Boolean);
+    const assign = [null, null];
+    if (this.numPlayers === 1) {
+      // solo: the person nearest the middle of the frame
+      if (people.length) assign[0] = people.reduce((a, b) => (Math.abs(cx(a) - 0.5) <= Math.abs(cx(b) - 0.5) ? a : b));
+    } else if (people.length >= 2) {
+      const [a, b] = people.slice(0, 2).sort((p, q) => cx(p) - cx(q));
+      assign[0] = a;
+      assign[1] = b;
+    } else if (people.length === 1) {
+      // one person visible: give it to the slot they were last near (or by screen side)
+      const x = cx(people[0]) * this.width;
+      const d = i => {
+        const px = this.slots[i].px;
+        return px ? Math.abs((px.lSh.x + px.rSh.x) / 2 - x) : Infinity;
+      };
+      const i = d(0) === Infinity && d(1) === Infinity ? (x < this.width / 2 ? 0 : 1) : d(0) <= d(1) ? 0 : 1;
+      assign[i] = people[0];
+    }
+    for (let i = 0; i < this.numPlayers; i++) this.ingestSlot(this.slots[i], assign[i], dt, now);
+  }
+
+  ingestSlot(slot, lm, dt, now) {
     if (!lm) {
-      if (now - this.lastSeen > 400) this.px = null;
+      if (now - slot.lastSeen > 400) slot.px = null;
       return;
     }
-    this.lastSeen = now;
+    slot.lastSeen = now;
     const W = this.width, H = this.height;
     const next = {};
     for (const name of NAMES) {
       const [x, y, v] = lm[IDX[name]];
-      const f = this.filters[name];
-      const prev = this.px?.[name];
+      const f = slot.filters[name];
+      const prev = slot.px?.[name];
       if (v < 0.15 && prev) {
         // landmark lost for a moment (motion blur, out of frame): hold its last position
         next[name] = { x: prev.x, y: prev.y, v: prev.v * 0.8 };
@@ -204,7 +249,7 @@ export class PoseTracker {
       }
       next[name] = { x: f.x.filter((1 - x) * W, dt), y: f.y.filter(y * H, dt), v };
     }
-    this.px = next;
+    slot.px = next;
   }
 
   stop() {
@@ -323,17 +368,23 @@ export class Calibrator {
   }
 }
 
+export const KEYS_P1 = {
+  KeyA: 'PL', KeyD: 'PR', KeyQ: 'HL', KeyE: 'HR', KeyZ: 'KL', KeyC: 'KR',
+  KeyW: 'UP', KeyS: 'DUCK', Space: 'JUMP', ArrowLeft: 'DL', ArrowRight: 'DR',
+};
+export const KEYS_P2 = {
+  KeyJ: 'PL', KeyL: 'PR', KeyU: 'HL', KeyO: 'HR', KeyM: 'KL', Period: 'KR',
+  KeyI: 'UP', KeyK: 'DUCK', Enter: 'JUMP', KeyH: 'DL', Semicolon: 'DR',
+};
+
 /** Keyboard stand-in for the camera: keys snap a virtual body into move poses. */
 export class VirtualBody {
-  constructor() {
+  constructor(keymap = KEYS_P1) {
     this.pose = clonePose(GUARD);
     this.active = null;
     this.until = 0;
     this.held = new Set();
-    this.keymap = {
-      KeyA: 'PL', KeyD: 'PR', KeyQ: 'HL', KeyE: 'HR', KeyZ: 'KL', KeyC: 'KR',
-      KeyW: 'UP', KeyS: 'DUCK', Space: 'JUMP', ArrowLeft: 'DL', ArrowRight: 'DR',
-    };
+    this.keymap = keymap;
     this.base = {
       kneeL: GUARD.lKn[1], kneeR: GUARD.rKn[1],
       thighL: GUARD.lHip[1] - GUARD.lKn[1], thighR: GUARD.rHip[1] - GUARD.rKn[1],
@@ -364,30 +415,44 @@ export class VirtualBody {
   }
 }
 
-/** Draws the tracked skeleton on the webcam preview. */
-export function drawCamSkeleton(canvas, px, w, h) {
+const CAM_COLORS = [['#00f0ff', '#ff2bd6'], ['#ff6ad5', '#ffd23f']];
+
+/** Draws the tracked skeletons on the webcam preview (one colour per player). */
+export function drawCamSkeleton(canvas, pxList, w, h) {
   if (canvas.width !== w) canvas.width = w;
   if (canvas.height !== h) canvas.height = h;
   const g = canvas.getContext('2d');
   g.clearRect(0, 0, w, h);
-  if (!px) return;
-  g.lineCap = 'round';
-  g.lineWidth = 5;
-  g.strokeStyle = '#00f0ff';
-  g.shadowColor = '#00f0ff';
-  g.shadowBlur = 10;
-  for (const [a, b] of BONES) {
-    const p = px[a], q = px[b];
-    if (!p || !q || p.v < 0.35 || q.v < 0.35) continue;
-    g.beginPath(); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y); g.stroke();
+  if (pxList.length > 1) {
+    // divider between the two players' halves
+    g.strokeStyle = 'rgba(255,255,255,0.35)';
+    g.setLineDash([10, 10]);
+    g.lineWidth = 3;
+    g.beginPath(); g.moveTo(w / 2, 0); g.lineTo(w / 2, h); g.stroke();
+    g.setLineDash([]);
   }
-  g.fillStyle = '#ff2bd6';
-  g.shadowColor = '#ff2bd6';
-  for (const n of ['lWr', 'rWr', 'nose']) {
-    const p = px[n];
-    if (!p || p.v < 0.35) continue;
-    g.beginPath(); g.arc(p.x, p.y, n === 'nose' ? 10 : 8, 0, Math.PI * 2); g.fill();
-  }
+  pxList.forEach((px, i) => {
+    if (!px) return;
+    const [line, dot] = CAM_COLORS[i];
+    g.lineCap = 'round';
+    g.lineWidth = 5;
+    g.strokeStyle = line;
+    g.shadowColor = line;
+    g.shadowBlur = 10;
+    for (const [a, b] of BONES) {
+      const p = px[a], q = px[b];
+      if (!p || !q || p.v < 0.35 || q.v < 0.35) continue;
+      g.beginPath(); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y); g.stroke();
+    }
+    g.fillStyle = dot;
+    g.shadowColor = dot;
+    for (const n of ['lWr', 'rWr', 'nose']) {
+      const p = px[n];
+      if (!p || p.v < 0.35) continue;
+      g.beginPath(); g.arc(p.x, p.y, n === 'nose' ? 10 : 8, 0, Math.PI * 2); g.fill();
+    }
+    g.shadowBlur = 0;
+  });
 }
 
 export { mid };

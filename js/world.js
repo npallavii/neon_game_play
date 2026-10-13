@@ -237,70 +237,42 @@ export class World {
     const hit = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.03, 0.08), this.hitLineMat);
     hit.position.set(0, 0.02, 0);
     this.scene.add(hit);
-    // Floor glow under the player
-    const c = document.createElement('canvas');
-    c.width = c.height = 128;
-    const g = c.getContext('2d');
-    const grad = g.createRadialGradient(64, 64, 4, 64, 64, 64);
-    grad.addColorStop(0, 'rgba(0,240,255,0.35)');
-    grad.addColorStop(1, 'rgba(0,240,255,0)');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, 128, 128);
-    this.floorGlow = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.4), new THREE.MeshBasicMaterial({
-      map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    }));
-    this.floorGlow.rotation.x = -Math.PI / 2;
-    this.floorGlow.position.set(0, 0.03, 0);
-    this.scene.add(this.floorGlow);
+    // Centre divider, shown in 2-player mode
+    this.divider = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 300), new THREE.MeshBasicMaterial({ color: neon(0xffd23f, 1.2), toneMapped: false }));
+    this.divider.position.set(0, 0.03, -148);
+    this.divider.visible = false;
+    this.scene.add(this.divider);
   }
 
-  // ---------------- Player avatar ----------------
+  // ---------------- Player avatars ----------------
 
   buildAvatar() {
-    this.avatar = new THREE.Group();
-    this.scene.add(this.avatar);
-    const boneMat = new THREE.MeshBasicMaterial({ color: neon(0x00e5ff, 0.9), toneMapped: false, transparent: true, opacity: 0.85 });
-    const jointMat = new THREE.MeshBasicMaterial({ color: neon(0x9ff8ff, 0.9), toneMapped: false });
-    this.handMat = new THREE.MeshBasicMaterial({ color: neon(0xff2bd6, 1.6), toneMapped: false });
-    const cyl = new THREE.CylinderGeometry(0.028, 0.028, 1, 8, 1, true);
-    cyl.translate(0, 0.5, 0);
-    cyl.rotateX(Math.PI / 2); // along +z, so lookAt() aims it
-    this.bones = BONES.concat([['neck', 'nose']]).map(([a, b]) => {
-      const m = new THREE.Mesh(cyl, boneMat);
-      this.avatar.add(m);
-      return { a, b, m };
-    });
-    const sph = new THREE.SphereGeometry(0.05, 12, 8);
-    this.joints = {};
-    for (const n of ['lSh', 'rSh', 'lEl', 'rEl', 'lHip', 'rHip', 'lKn', 'rKn', 'lAn', 'rAn']) {
-      const m = new THREE.Mesh(sph, jointMat);
-      this.avatar.add(m);
-      this.joints[n] = m;
-    }
-    const hand = new THREE.SphereGeometry(0.1, 16, 12);
-    for (const n of ['lWr', 'rWr']) {
-      const m = new THREE.Mesh(hand, this.handMat);
-      this.avatar.add(m);
-      this.joints[n] = m;
-    }
-    this.faces = { happy: this.faceSprite(false), yay: this.faceSprite(true) };
-    this.head = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.faces.happy, transparent: true, depthWrite: false, toneMapped: false }));
-    this.head.scale.set(0.42, 0.42, 1);
-    this.avatar.add(this.head);
-    this.moodUntil = 0;
-    this.avatar.visible = false;
-    this._v = new THREE.Vector3();
+    this.avatars = [
+      new Avatar(this, { bone: 0x00e5ff, joint: 0x9ff8ff, hand: 0xff2bd6, face: '#7ff6ff', glow: '0,240,255' }),
+      new Avatar(this, { bone: 0xff6ad5, joint: 0xffc2ee, hand: 0xffd23f, face: '#ffb3e6', glow: '255,106,213' }),
+    ];
+    this.setPlayers(1);
   }
 
-  faceSprite(excited) {
+  /** 1 player: one centred lane. 2 players: two lanes side by side. */
+  setPlayers(n) {
+    this.numPlayers = n;
+    this.laneX = n === 2 ? [-1.55, 1.55] : [0, 0];
+    this.laneWidth = n === 2 ? 2.9 : 5.6;
+    this.camZ = n === 2 ? 4.9 : 3.9;
+    this.divider.visible = n === 2;
+    if (n === 1) this.avatars[1].set(null);
+  }
+
+  faceSprite(excited, ring = '#7ff6ff') {
     const c = document.createElement('canvas');
     c.width = c.height = 128;
     const g = c.getContext('2d');
-    g.shadowColor = '#00e5ff';
+    g.shadowColor = ring;
     g.shadowBlur = 10;
     g.lineWidth = 8;
-    g.strokeStyle = '#7ff6ff';
-    g.fillStyle = 'rgba(0, 229, 255, 0.18)';
+    g.strokeStyle = ring;
+    g.fillStyle = 'rgba(255, 255, 255, 0.12)';
     g.beginPath(); g.arc(64, 64, 52, 0, Math.PI * 2); g.fill(); g.stroke();
     g.fillStyle = '#ffffff';
     g.strokeStyle = '#ffffff';
@@ -323,8 +295,8 @@ export class World {
   }
 
   /** Show the excited face for a moment (after a hit). */
-  cheer() {
-    this.moodUntil = this.time + 0.5;
+  cheer(i = 0) {
+    this.avatars[i].moodUntil = this.time + 0.5;
   }
 
   /** Short burst of extra warp + glow when the speed level goes up. */
@@ -336,37 +308,9 @@ export class World {
     this.decor.confetti();
   }
 
-  /** body: pose dict in body space or null */
-  setAvatar(body) {
-    if (!body) { this.avatar.visible = false; return; }
-    this.avatar.visible = true;
-    // reuse vectors every frame (no garbage -> no GC stutter)
-    const V = (this._vec ??= {});
-    const P = (this._P ??= {});
-    for (const k in P) P[k] = null;
-    for (const k in body) P[k] = (V[k] ??= new THREE.Vector3()).set(body[k][0] * S, OY + body[k][1] * S, 0.25);
-    if (P.lSh && P.rSh) P.neck = (V.neck ??= new THREE.Vector3()).copy(P.lSh).add(P.rSh).multiplyScalar(0.5);
-    for (const { a, b, m } of this.bones) {
-      const p = P[a], q = P[b];
-      if (!p || !q) { m.visible = false; continue; }
-      m.visible = true;
-      m.position.copy(p);
-      m.lookAt(q);
-      m.scale.set(1, 1, p.distanceTo(q));
-    }
-    for (const n in this.joints) {
-      const j = this.joints[n];
-      if (P[n]) { j.visible = true; j.position.copy(P[n]); } else j.visible = false;
-    }
-    if (P.nose) {
-      this.head.visible = true;
-      this.head.position.copy(P.nose);
-      this.head.position.y += 0.04;
-      const face = this.time < this.moodUntil ? this.faces.yay : this.faces.happy;
-      if (this.head.material.map !== face) { this.head.material.map = face; this.head.material.needsUpdate = true; }
-    } else this.head.visible = false;
-    const c = P.neck;
-    if (c) this.floorGlow.position.x = c.x;
+  /** body: pose dict in body space (or null to hide); i: player index */
+  setAvatar(body, i = 0) {
+    this.avatars[i].set(body, this.laneX[i]);
   }
 
   // ---------------- Notes ----------------
@@ -496,14 +440,15 @@ export class World {
         break;
       }
       case 'duck': {
-        addBox(5.6, 0.32, 0.35);
-        addFace(this.bannerTexture('▼  DUCK  ▼', m.color, 1024, 64), 5.6, 0.32, 0.18);
+        const W = this.laneWidth;
+        addBox(W, 0.32, 0.35);
+        addFace(this.bannerTexture('▼  DUCK  ▼', m.color, Math.round((64 * W) / 0.32), 64), W, 0.32, 0.18);
         target = bw(0, 0.75);
         group.position.copy(target).setZ(0);
         break;
       }
       case 'jump': {
-        addBox(5.6, 0.22, 0.35);
+        addBox(this.laneWidth, 0.22, 0.35);
         const f = addFace(this.bannerTexture('▲  JUMP  ▲', m.color, 1024, 96), 2.4, 0.22, 0.18);
         f.position.y = 0;
         target = new THREE.Vector3(0, 0.22, 0);
@@ -519,6 +464,13 @@ export class World {
         group.position.copy(target);
         break;
       }
+    }
+    // shift into this player's lane
+    const lx = this.laneX[note.player || 0] || 0;
+    if (lx) {
+      group.position.x += lx;
+      target.x += lx;
+      if (note.ring) note.ring.position.x += lx;
     }
     group.userData.edgeMat = edgeMat;
     group.userData.fillMat = fillMat;
@@ -683,7 +635,7 @@ export class World {
     this.camera.position.set(
       Math.sin(this.time * 0.35) * 0.08 + (Math.random() - 0.5) * s,
       1.7 + Math.sin(this.time * 0.5) * 0.03 + (Math.random() - 0.5) * s,
-      3.9,
+      this.camZ,
     );
     this.camera.lookAt(this.lookAt);
 
@@ -738,6 +690,101 @@ export class World {
     this.baseFov = w / h < 1.2 ? 60 * Math.min(1.7, 1.2 / (w / h)) : 60;
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
+  }
+}
+
+/** One neon stick-figure player (bones, joints, smiley head, floor glow). */
+class Avatar {
+  constructor(world, c) {
+    this.world = world;
+    const scene = world.scene;
+    this.group = new THREE.Group();
+    scene.add(this.group);
+    const boneMat = new THREE.MeshBasicMaterial({ color: neon(c.bone, 0.9), toneMapped: false, transparent: true, opacity: 0.85 });
+    const jointMat = new THREE.MeshBasicMaterial({ color: neon(c.joint, 0.9), toneMapped: false });
+    const handMat = new THREE.MeshBasicMaterial({ color: neon(c.hand, 1.6), toneMapped: false });
+    const cyl = world.sharedGeo('avatarBone', () => {
+      const g = new THREE.CylinderGeometry(0.028, 0.028, 1, 8, 1, true);
+      g.translate(0, 0.5, 0);
+      g.rotateX(Math.PI / 2); // along +z, so lookAt() aims it
+      return g;
+    });
+    this.bones = BONES.concat([['neck', 'nose']]).map(([a, b]) => {
+      const m = new THREE.Mesh(cyl, boneMat);
+      this.group.add(m);
+      return { a, b, m };
+    });
+    const sph = world.sharedGeo('avatarJoint', () => new THREE.SphereGeometry(0.05, 12, 8));
+    const hand = world.sharedGeo('avatarHand', () => new THREE.SphereGeometry(0.1, 16, 12));
+    this.joints = {};
+    for (const n of ['lSh', 'rSh', 'lEl', 'rEl', 'lHip', 'rHip', 'lKn', 'rKn', 'lAn', 'rAn']) {
+      const m = new THREE.Mesh(sph, jointMat);
+      this.group.add(m);
+      this.joints[n] = m;
+    }
+    for (const n of ['lWr', 'rWr']) {
+      const m = new THREE.Mesh(hand, handMat);
+      this.group.add(m);
+      this.joints[n] = m;
+    }
+    this.faces = { happy: world.faceSprite(false, c.face), yay: world.faceSprite(true, c.face) };
+    this.head = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.faces.happy, transparent: true, depthWrite: false, toneMapped: false }));
+    this.head.scale.set(0.42, 0.42, 1);
+    this.group.add(this.head);
+
+    const gc = document.createElement('canvas');
+    gc.width = gc.height = 128;
+    const g = gc.getContext('2d');
+    const grad = g.createRadialGradient(64, 64, 4, 64, 64, 64);
+    grad.addColorStop(0, `rgba(${c.glow},0.35)`);
+    grad.addColorStop(1, `rgba(${c.glow},0)`);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+    this.glow = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.4), new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(gc), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    }));
+    this.glow.rotation.x = -Math.PI / 2;
+    this.glow.position.set(0, 0.03, 0);
+    scene.add(this.glow);
+
+    this.moodUntil = 0;
+    this.V = {};
+    this.P = {};
+    this.group.visible = false;
+    this.glow.visible = false;
+  }
+
+  /** body: pose dict in body space or null; laneX: sideways offset in metres */
+  set(body, laneX = 0) {
+    const visible = !!body;
+    this.group.visible = visible;
+    this.glow.visible = visible;
+    if (!visible) return;
+    // reuse vectors every frame (no garbage -> no GC stutter)
+    const { V, P } = this;
+    for (const k in P) P[k] = null;
+    for (const k in body) P[k] = (V[k] ??= new THREE.Vector3()).set(laneX + body[k][0] * S, OY + body[k][1] * S, 0.25);
+    if (P.lSh && P.rSh) P.neck = (V.neck ??= new THREE.Vector3()).copy(P.lSh).add(P.rSh).multiplyScalar(0.5);
+    for (const { a, b, m } of this.bones) {
+      const p = P[a], q = P[b];
+      if (!p || !q) { m.visible = false; continue; }
+      m.visible = true;
+      m.position.copy(p);
+      m.lookAt(q);
+      m.scale.set(1, 1, p.distanceTo(q));
+    }
+    for (const n in this.joints) {
+      const j = this.joints[n];
+      if (P[n]) { j.visible = true; j.position.copy(P[n]); } else j.visible = false;
+    }
+    if (P.nose) {
+      this.head.visible = true;
+      this.head.position.copy(P.nose);
+      this.head.position.y += 0.04;
+      const face = this.world.time < this.moodUntil ? this.faces.yay : this.faces.happy;
+      if (this.head.material.map !== face) { this.head.material.map = face; this.head.material.needsUpdate = true; }
+    } else this.head.visible = false;
+    if (P.neck) this.glow.position.x = P.neck.x;
   }
 }
 

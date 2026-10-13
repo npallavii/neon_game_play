@@ -26,6 +26,15 @@ You need an internet connection the first time, because Three.js, MediaPipe and 
 
 Press **P** or **Esc** to pause. You can re-calibrate from the pause menu.
 
+## 2-player versus mode
+
+Pick **2 Players** in the menu. Both players stand side by side, facing one webcam:
+
+- **Space:** about 3–4 m wide, with the camera about 3 m in front of you. Both players should be visible from head to knees in the camera preview.
+- **Sides:** Player 1 stands on the **left** (cyan avatar) and Player 2 on the **right** (pink avatar). Stay on your own side, because swapping places mixes up the tracking.
+- **Gameplay:** you both get the same moves in your own lane. Each player has their own score and combo, and the crown 👑 shows who's leading.
+- **Keyboard keys for Player 2:** J / L punch · U / O high · M / . knee · I reach up · K duck · Enter jump · H / ; step.
+
 ## Getting accurate tracking
 
 - **Light:** light the room from the front, facing you. Avoid a bright window behind you.
