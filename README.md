@@ -41,6 +41,7 @@ Pick **2 Players** in the menu. Both players stand side by side, facing one webc
 - **Framing:** your whole body, including your knees, should be in view. Keep about 2–3 m from the camera.
 - **Clothes and background:** clothes that contrast with the background help. A plain wall is best.
 - **DETECTED chip:** the chip in the bottom-left shows what the game recognises in real time. If a move doesn't show up there, adjust the framing or lighting first.
+- **FPS counter:** press **F** to show frames per second, tracking speed and the current quality level. If FPS stays under 50, the game switches to *Smooth* quality by itself, hiding the palm trees, gems and mountains, and then the glow if needed.
 - **Re-calibrate:** if you've moved a lot, pause with **P** and choose *Re-calibrate*.
 
 ## Project layout

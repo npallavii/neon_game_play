@@ -27,7 +27,7 @@ export const BONES = [
  * light smoothing when it moves fast (no lag on punches).
  */
 class OneEuro {
-  constructor(minCutoff = 1.2, beta = 0.012, dCutoff = 1.0) {
+  constructor(minCutoff = 1.0, beta = 0.02, dCutoff = 1.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.dCutoff = dCutoff;
@@ -90,6 +90,16 @@ export class PoseTracker {
       if (!(await this.startWorker())) await this.startMainThread();
     }
     this.ready = true;
+    // Send each camera frame to the model the moment it arrives (not on the next screen refresh).
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype && !this.rvfc) {
+      this.rvfc = true;
+      const onFrame = now => {
+        if (!this.ready) { this.rvfc = false; return; }
+        this.submit(now);
+        this.video.requestVideoFrameCallback(onFrame);
+      };
+      this.video.requestVideoFrameCallback(onFrame);
+    }
   }
 
   startWorker() {
@@ -172,6 +182,11 @@ export class PoseTracker {
 
   /** Call every frame. Returns the latest filtered pixel landmarks (or null). */
   update(now) {
+    if (!this.rvfc) this.submit(now);
+    return this.px;
+  }
+
+  submit(now) {
     if (!this.ready || this.video.readyState < 2) return this.px;
     if (this.video.currentTime === this.lastVideoTime) return this.px;
 

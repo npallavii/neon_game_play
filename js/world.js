@@ -25,6 +25,8 @@ export class World {
     this.pixelRatio = this.maxPixelRatio;
     r.setPixelRatio(this.pixelRatio);
     this.perf = { avg: 1 / 60, timer: 0, goodFor: 0 };
+    this.tier = 0;
+    this.mountains = [];
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.toneMappingExposure = 1.0;
 
@@ -143,11 +145,16 @@ export class World {
         uOffset: { value: 0 },
         uPulse: { value: 0 },
         uBeat: { value: 0 },
+        uFlashA: { value: new THREE.Vector3() },
+        uFlashB: { value: new THREE.Vector3() },
+        uLaneX: { value: new THREE.Vector2() },
+        uLaneW: { value: 3 },
         uFog: { value: FOG },
       },
       vertexShader: `varying vec3 vPos; void main(){ vec4 w = modelMatrix * vec4(position,1.0); vPos = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
       fragmentShader: `
         varying vec3 vPos; uniform float uOffset; uniform float uPulse; uniform float uBeat; uniform vec3 uFog;
+        uniform vec3 uFlashA; uniform vec3 uFlashB; uniform vec2 uLaneX; uniform float uLaneW;
         float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         vec3 hue(float h){ return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
         void main(){
@@ -171,6 +178,11 @@ export class World {
           vec3 tc = hue(fract(cell.x * 0.13 + cell.y * 0.07 + uBeat * 0.05));
           float fadeT = 1.0 - smoothstep(20.0, 80.0, d);
           col += tc * tile * onTrack * lit * fadeT * (0.22 + uPulse * 0.45);
+          // tiles under a player flash in their colour when they score
+          float nearP = 1.0 - smoothstep(1.0, 16.0, d);
+          float inA = 1.0 - step(uLaneW, abs(vPos.x - uLaneX.x));
+          float inB = 1.0 - step(uLaneW, abs(vPos.x - uLaneX.y));
+          col += (uFlashA * inA + uFlashB * inB) * tile * nearP;
           float fog = smoothstep(30.0, 170.0, d);
           gl_FragColor = vec4(mix(col, uFog, fog), 1.0);
         }`,
@@ -201,8 +213,9 @@ export class World {
       const pos = geo.attributes.position;
       for (let i = 0; i < pos.count; i++) pos.setY(i, h(pos.getX(i), pos.getZ(i)));
       geo.computeVertexNormals();
-      this.scene.add(new THREE.Mesh(geo, fill));
-      this.scene.add(new THREE.Mesh(geo, wire));
+      const solid = new THREE.Mesh(geo, fill), lines = new THREE.Mesh(geo, wire);
+      this.scene.add(solid, lines);
+      this.mountains.push(solid, lines);
     }
   }
 
@@ -261,6 +274,9 @@ export class World {
     this.laneWidth = n === 2 ? 2.9 : 5.6;
     this.camZ = n === 2 ? 4.9 : 3.9;
     this.divider.visible = n === 2;
+    const u = this.grid.material.uniforms;
+    u.uLaneX.value.set(this.laneX[0], this.laneX[1]);
+    u.uLaneW.value = n === 2 ? 1.5 : 3.0;
     if (n === 1) this.avatars[1].set(null);
   }
 
@@ -501,6 +517,8 @@ export class World {
       if (note.missed) {
         g.userData.edgeMat.color.setRGB(0.4, 0.4, 0.5);
         g.userData.fillMat.opacity = 0.08;
+        const w = Math.max(0, 1 - (this.time - note.missedAt) / 0.4);
+        g.rotation.z = Math.sin(this.time * 60) * 0.25 * w; // "crack" wobble
       }
       if (g.position.z > this.camera.position.z + 0.5) this.removeNote(note);
     }
@@ -518,17 +536,27 @@ export class World {
     for (const n of [...this.notes]) this.removeNote(n);
   }
 
-  hitNote(note, grade) {
+  /** parts: which body parts did it ('lWr', 'rWr', 'lKn', 'rKn' or 'body') */
+  hitNote(note, grade, parts = ['body']) {
+    const color = MOVES[note.move].color;
     const pos = note.target.clone();
     pos.z = Math.max(note.mesh.position.z, -1);
-    this.burst(pos, MOVES[note.move].color, grade === 'perfect' ? 90 : 60);
-    this.shockwave(pos, MOVES[note.move].color);
+    const big = grade === 'perfect';
+    this.shatter(pos, color, big ? 16 : 11);         // block breaks into glowing pieces
+    this.burst(pos, color, big ? 70 : 45);           // sparks
+    this.shockwave(pos, color);                      // thin ring
+    this.flare(pos, color, big ? 1.4 : 1);          // big soft colour burst
+    this.flashFloor(note.player || 0, color);        // dance-floor tiles light up
+    this.avatars[note.player || 0].flash(parts, color);
+    if (big) this.impact();                          // punchy camera bump
     this.removeNote(note);
   }
 
   missNote(note) {
     note.missed = true;
+    note.missedAt = this.time;
     this.shake = 0.12;
+    this.cross(note.target);
   }
 
   // ---------------- Particles ----------------
@@ -536,6 +564,154 @@ export class World {
   buildParticles() {
     this.bursts = [];
     this.waves = [];
+    this.fx = [];        // simple timed effects: { obj, age, life, step(k) }
+    this.floorFlash = [{ c: new THREE.Color(), k: 0 }, { c: new THREE.Color(), k: 0 }];
+    this.impactT = 0;
+    this.buildShards();
+  }
+
+  // Block shards: one instanced mesh, so 300 pieces cost a single draw call.
+  buildShards() {
+    const N = 320;
+    const mesh = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(0.1), new THREE.MeshBasicMaterial({ toneMapped: false }), N);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(N * 3), 3);
+    mesh.frustumCulled = false;
+    const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    for (let i = 0; i < N; i++) mesh.setMatrixAt(i, zero);
+    this.scene.add(mesh);
+    this.shardMesh = mesh;
+    this.shards = [];
+    this.shardFree = Array.from({ length: N }, (_, i) => i);
+    this._m = new THREE.Matrix4();
+    this._q = new THREE.Quaternion();
+    this._e = new THREE.Euler();
+    this._s = new THREE.Vector3();
+    this._zero = zero;
+  }
+
+  shatter(pos, color, n) {
+    const c = neon(color, 1.9);
+    for (let i = 0; i < n; i++) {
+      const idx = this.shardFree.pop();
+      if (idx === undefined) break;
+      const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.8 - 0.1, Math.random() * 0.6 + 0.2).normalize();
+      this.shards.push({
+        idx,
+        p: pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, 0)),
+        v: dir.multiplyScalar(3 + Math.random() * 4),
+        r: new THREE.Vector3(Math.random() * 6, Math.random() * 6, Math.random() * 6),
+        rv: new THREE.Vector3((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18),
+        size: 0.8 + Math.random() * 0.9,
+        age: 0,
+        life: 0.6 + Math.random() * 0.25,
+      });
+      this.shardMesh.setColorAt(idx, c);
+    }
+    this.shardMesh.instanceColor.needsUpdate = true;
+  }
+
+  updateShards(dt) {
+    if (!this.shards.length) return;
+    const { _m, _q, _e, _s } = this;
+    this.shards = this.shards.filter(sh => {
+      sh.age += dt;
+      if (sh.age >= sh.life) {
+        this.shardMesh.setMatrixAt(sh.idx, this._zero);
+        this.shardFree.push(sh.idx);
+        return false;
+      }
+      sh.v.y -= 9 * dt;
+      sh.p.addScaledVector(sh.v, dt);
+      sh.r.addScaledVector(sh.rv, dt);
+      const k = sh.size * (1 - sh.age / sh.life);
+      _q.setFromEuler(_e.set(sh.r.x, sh.r.y, sh.r.z));
+      _m.compose(sh.p, _q, _s.set(k, k, k));
+      this.shardMesh.setMatrixAt(sh.idx, _m);
+      return true;
+    });
+    this.shardMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  glowTexture() {
+    return this.labelTexture('glow', c => {
+      c.width = c.height = 128;
+      const g = c.getContext('2d');
+      const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 128, 128);
+    });
+  }
+
+  /** Big soft burst of light in the block's colour. */
+  flare(pos, color, size = 1) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.glowTexture(), color: neon(color, 1.6), transparent: true, depthWrite: false,
+      blending: THREE.AdditiveBlending, toneMapped: false,
+    }));
+    sp.position.copy(pos);
+    this.scene.add(sp);
+    this.fx.push({
+      obj: sp, age: 0, life: 0.4,
+      step: k => { sp.scale.setScalar((0.6 + k * 2.6) * size); sp.material.opacity = (1 - k) * (1 - k); },
+    });
+  }
+
+  /** Red ✕ where a block was missed. */
+  cross(pos) {
+    const tex = this.labelTexture('cross', c => {
+      c.width = c.height = 128;
+      const g = c.getContext('2d');
+      g.strokeStyle = '#ff3355';
+      g.shadowColor = '#ff3355';
+      g.shadowBlur = 16;
+      g.lineWidth = 16;
+      g.lineCap = 'round';
+      g.beginPath(); g.moveTo(32, 32); g.lineTo(96, 96); g.moveTo(96, 32); g.lineTo(32, 96); g.stroke();
+    });
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false }));
+    sp.position.copy(pos);
+    sp.position.z = 0.3;
+    this.scene.add(sp);
+    this.fx.push({
+      obj: sp, age: 0, life: 0.6,
+      step: k => { sp.scale.setScalar(0.45 + Math.min(1, k * 4) * 0.2); sp.material.opacity = 1 - k * k; },
+    });
+  }
+
+  flashFloor(player, color) {
+    const f = this.floorFlash[player];
+    f.c.setHex(color);
+    f.k = 1;
+  }
+
+  /** Short punchy camera bump (for PERFECT hits). */
+  impact() {
+    this.impactT = 1;
+  }
+
+  updateFx(dt) {
+    this.fx = this.fx.filter(f => {
+      f.age += dt;
+      const k = Math.min(1, f.age / f.life);
+      f.step(k);
+      if (k >= 1) {
+        this.scene.remove(f.obj);
+        f.obj.material.dispose();
+        return false;
+      }
+      return true;
+    });
+    const u = this.grid.material.uniforms;
+    this.floorFlash.forEach((f, i) => {
+      f.k = Math.max(0, f.k - dt * 3);
+      const target = i === 0 ? u.uFlashA.value : u.uFlashB.value;
+      target.set(f.c.r, f.c.g, f.c.b).multiplyScalar(f.k * 0.9);
+    });
+    this.impactT = Math.max(0, this.impactT - dt * 6);
   }
 
   burst(pos, color, count) {
@@ -619,19 +795,21 @@ export class World {
     this.bloom.strength = 0.75 + this.pulse * 0.2 + this.boostT * 0.6;
     // camera "warp": field of view widens as you go faster
     const fast = Math.min(1, Math.max(0, (scrollSpeed - 13) / 17));
-    const fov = this.baseFov + fast * 9 + this.boostT * 6;
+    const fov = this.baseFov + fast * 9 + this.boostT * 6 - this.impactT * 2.5;
     if (Math.abs(fov - this.camera.fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
 
     this.updateParticles(dt);
+    this.updateShards(dt);
+    this.updateFx(dt);
     this.adaptQuality(dt);
     this.decor.update(dt, scrollSpeed, this.pulse, this.beatCount);
 
     // camera sway + shake
     this.shake = Math.max(0, this.shake - dt);
-    const s = this.shake * 0.25;
+    const s = this.shake * 0.25 + this.impactT * 0.05;
     this.camera.position.set(
       Math.sin(this.time * 0.35) * 0.08 + (Math.random() - 0.5) * s,
       1.7 + Math.sin(this.time * 0.5) * 0.03 + (Math.random() - 0.5) * s,
@@ -647,6 +825,20 @@ export class World {
     return { x: (p.x * 0.5 + 0.5) * window.innerWidth, y: (-p.y * 0.5 + 0.5) * window.innerHeight };
   }
 
+  /** 0 = everything on, 1 = no palm trees / gems / mountains, 2 = also no glow (bloom). */
+  setTier(t) {
+    this.tier = t;
+    this.decor.setLite(t >= 1);
+    for (const m of this.mountains) m.visible = t < 1;
+    this.bloom.enabled = t < 2;
+  }
+
+  get qualityName() {
+    if (this.tier >= 2) return 'Smooth (max)';
+    if (this.tier === 1) return 'Smooth';
+    return this.pixelRatio >= 1 ? 'High' : 'Medium';
+  }
+
   /** Lower the render resolution when frames get slow, raise it again when there's headroom. */
   adaptQuality(dt) {
     const f = this.perf;
@@ -656,10 +848,15 @@ export class World {
     if (f.timer < 1.5) return;
     f.timer = 0;
     let next = this.pixelRatio;
-    if (f.avg > 1 / 50 && this.pixelRatio > 0.6) { next = Math.max(0.6, this.pixelRatio - 0.2); f.goodFor = 0; }
-    else if (f.avg < 1 / 57) {
+    if (f.avg > 1 / 50) {
+      f.goodFor = 0;
+      // Smooth mode: first lower the resolution, then switch off heavy extras
+      if (this.pixelRatio > 0.6) next = Math.max(0.6, this.pixelRatio - 0.2);
+      else if (this.tier < 2) this.setTier(this.tier + 1);
+    } else if (f.avg < 1 / 57) {
       f.goodFor += 1.5;
-      if (f.goodFor >= 6 && this.pixelRatio < this.maxPixelRatio) { next = Math.min(this.maxPixelRatio, this.pixelRatio + 0.1); f.goodFor = 0; }
+      if (f.goodFor >= 8 && this.tier > 0) { this.setTier(this.tier - 1); f.goodFor = 0; }
+      else if (f.goodFor >= 6 && this.tier === 0 && this.pixelRatio < this.maxPixelRatio) { next = Math.min(this.maxPixelRatio, this.pixelRatio + 0.1); f.goodFor = 0; }
     } else f.goodFor = 0;
     if (next !== this.pixelRatio) {
       this.pixelRatio = next;
@@ -675,6 +872,9 @@ export class World {
     for (const n of temp) this.spawnNote(n);
     this.burst(new THREE.Vector3(0, -50, -5), 0xffffff, 4);
     this.shockwave(new THREE.Vector3(0, -50, -5), 0xffffff);
+    this.flare(new THREE.Vector3(0, -50, -5), 0xffffff);
+    this.cross(new THREE.Vector3(0, -50, -5));
+    this.shatter(new THREE.Vector3(0, -50, -5), 0xffffff, 1);
     this.decor.confetti(new THREE.Vector3(0, -50, -5), 4);
     this.renderer.compile(this.scene, this.camera);
     for (const tex of this.texCache.values()) this.renderer.initTexture(tex);
@@ -702,7 +902,9 @@ class Avatar {
     scene.add(this.group);
     const boneMat = new THREE.MeshBasicMaterial({ color: neon(c.bone, 0.9), toneMapped: false, transparent: true, opacity: 0.85 });
     const jointMat = new THREE.MeshBasicMaterial({ color: neon(c.joint, 0.9), toneMapped: false });
-    const handMat = new THREE.MeshBasicMaterial({ color: neon(c.hand, 1.6), toneMapped: false });
+    this.handColor = neon(c.hand, 1.6);
+    this.boneMat = boneMat;
+    this.boneColor = boneMat.color.clone();
     const cyl = world.sharedGeo('avatarBone', () => {
       const g = new THREE.CylinderGeometry(0.028, 0.028, 1, 8, 1, true);
       g.translate(0, 0.5, 0);
@@ -723,10 +925,28 @@ class Avatar {
       this.joints[n] = m;
     }
     for (const n of ['lWr', 'rWr']) {
-      const m = new THREE.Mesh(hand, handMat);
+      const m = new THREE.Mesh(hand, new THREE.MeshBasicMaterial({ color: this.handColor.clone(), toneMapped: false }));
       this.group.add(m);
       this.joints[n] = m;
     }
+    // light trails behind the hands (brighter when moving fast / after a hit)
+    this.TRAIL = 14;
+    this.trails = {};
+    for (const n of ['lWr', 'rWr']) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.TRAIL * 3), 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(this.TRAIL * 3), 3));
+      const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.16, vertexColors: true, transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, toneMapped: false,
+      }));
+      pts.frustumCulled = false;
+      scene.add(pts);
+      this.trails[n] = { pts, hist: [], color: new THREE.Color(c.hand) };
+    }
+    this.flashUntil = {};
+    this.flashColor = new THREE.Color();
+    this._white = new THREE.Color(2.5, 2.5, 2.5);
     this.faces = { happy: world.faceSprite(false, c.face), yay: world.faceSprite(true, c.face) };
     this.head = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.faces.happy, transparent: true, depthWrite: false, toneMapped: false }));
     this.head.scale.set(0.42, 0.42, 1);
@@ -759,7 +979,8 @@ class Avatar {
     const visible = !!body;
     this.group.visible = visible;
     this.glow.visible = visible;
-    if (!visible) return;
+    for (const n in this.trails) this.trails[n].pts.visible = visible;
+    if (!visible) { for (const n in this.trails) this.trails[n].hist.length = 0; return; }
     // reuse vectors every frame (no garbage -> no GC stutter)
     const { V, P } = this;
     for (const k in P) P[k] = null;
@@ -785,6 +1006,54 @@ class Avatar {
       if (this.head.material.map !== face) { this.head.material.map = face; this.head.material.needsUpdate = true; }
     } else this.head.visible = false;
     if (P.neck) this.glow.position.x = P.neck.x;
+    this.updateFlash(P);
+  }
+
+  /** Light up the part that scored. parts: joint names, or ['body'] for the whole figure. */
+  flash(parts, color) {
+    const until = this.world.time + 0.35;
+    for (const p of parts) this.flashUntil[p] = until;
+    this.flashColor.setHex(color);
+  }
+
+  flashLevel(name) {
+    const u = this.flashUntil[name];
+    return u ? Math.max(0, (u - this.world.time) / 0.35) : 0;
+  }
+
+  updateFlash(P) {
+    const body = this.flashLevel('body');
+    this.boneMat.color.copy(this.boneColor).lerp(this._white, body * 0.8);
+    for (const n of ['lWr', 'rWr', 'lKn', 'rKn']) {
+      const j = this.joints[n];
+      const k = Math.max(this.flashLevel(n), body);
+      j.scale.setScalar(1 + k * (n.endsWith('Wr') ? 1.6 : 2.4));
+      if (n.endsWith('Wr')) j.material.color.copy(this.handColor).lerp(this._white, k);
+    }
+    // trails
+    for (const n in this.trails) {
+      const tr = this.trails[n];
+      const p = P[n];
+      if (!p) { tr.hist.length = 0; continue; }
+      // recycle the oldest point vector (no per-frame allocations)
+      const v = tr.hist.length >= this.TRAIL ? tr.hist.pop() : new THREE.Vector3();
+      tr.hist.unshift(v.copy(p));
+      const pos = tr.pts.geometry.attributes.position.array;
+      const col = tr.pts.geometry.attributes.color.array;
+      const boost = 1 + this.flashLevel(n) * 2;
+      for (let i = 0; i < this.TRAIL; i++) {
+        const h = tr.hist[Math.min(i, tr.hist.length - 1)];
+        pos[i * 3] = h.x; pos[i * 3 + 1] = h.y; pos[i * 3 + 2] = h.z - 0.02;
+        // brightness = how fast the hand was moving there, fading along the trail
+        const prev = tr.hist[Math.min(i + 1, tr.hist.length - 1)];
+        const speed = Math.min(1, h.distanceTo(prev) * 12);
+        const k = speed * (1 - i / this.TRAIL) * boost;
+        const c = this.flashLevel(n) > 0 ? this.flashColor : tr.color;
+        col[i * 3] = c.r * k; col[i * 3 + 1] = c.g * k; col[i * 3 + 2] = c.b * k;
+      }
+      tr.pts.geometry.attributes.position.needsUpdate = true;
+      tr.pts.geometry.attributes.color.needsUpdate = true;
+    }
   }
 }
 

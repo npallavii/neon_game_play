@@ -3,7 +3,7 @@ import { AudioEngine, TRACKS, linearTempo } from './audio.js';
 import { generateBeatmap } from './beatmap.js';
 import { PoseTracker, Calibrator, VirtualBody, BodyMapper, toBody, drawCamSkeleton, KEYS_P1, KEYS_P2 } from './pose.js';
 import { Coach } from './coach.js';
-import { detectAll, POSES, GUARD, COACH_TEXT, clonePose, lerpPose } from './moves.js';
+import { detectAll, POSES, GUARD, COACH_TEXT, MOVES, clonePose, lerpPose, mid } from './moves.js';
 
 const $ = id => document.getElementById(id);
 
@@ -441,8 +441,10 @@ function judge(note, grade, pts = 0) {
     pl.score += pts * mult;
     pl.points += pts;
     pl.counts[grade]++;
-    world.hitNote(note, grade);
+    world.hitNote(note, grade, hitParts(note, pl.body));
     world.cheer(note.player);
+    flyPoints(note.player, pts * mult, where, grade);
+    edgeFlash(note.player, MOVES[note.move].color);
     audio.sfxHit(grade);
     popup(pick(PRAISE[grade]), grade, where);
     if (pl.combo % 10 === 0) {
@@ -454,6 +456,54 @@ function judge(note, grade, pts = 0) {
     setTimeout(() => c.classList.remove('bump'), 90);
   }
   updateHud();
+}
+
+/** Which body part scored this note (so that hand/knee can light up). */
+function hitParts(note, body) {
+  const m = MOVES[note.move];
+  if (m.kind === 'hand' && body) {
+    const s = mid(body.lSh, body.rSh);
+    if (s) {
+      const tx = s[0] + m.pos[0], ty = s[1] + m.pos[1];
+      const d = w => (w ? Math.hypot(w[0] - tx, w[1] - ty) : Infinity);
+      return [d(body.lWr) <= d(body.rWr) ? 'lWr' : 'rWr'];
+    }
+  }
+  if (m.kind === 'knee') return [m.side < 0 ? 'lKn' : 'rKn'];
+  if (m.kind === 'up') return ['lWr', 'rWr'];
+  return ['body'];
+}
+
+/** "+300" flies from the block into the player's score. */
+function flyPoints(player, amount, from, grade) {
+  const scoreEl = isTwo() ? $(`p${player + 1}score`) : $('score');
+  const r = scoreEl.getBoundingClientRect();
+  const el = document.createElement('div');
+  el.className = 'fly ' + grade;
+  el.textContent = '+' + amount;
+  el.style.left = from.x + 'px';
+  el.style.top = from.y + 'px';
+  $('popups').appendChild(el);
+  const dx = r.left + r.width / 2 - from.x;
+  const dy = r.top + r.height / 2 - from.y;
+  el.animate([
+    { transform: 'translate(-50%, -50%) scale(0.6)', opacity: 0 },
+    { transform: 'translate(-50%, -120%) scale(1.25)', opacity: 1, offset: 0.25 },
+    { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0.5)`, opacity: 0.9 },
+  ], { duration: 750, easing: 'cubic-bezier(.45,0,.7,1)' }).onfinish = () => {
+    el.remove();
+    scoreEl.classList.add('bump');
+    setTimeout(() => scoreEl.classList.remove('bump'), 100);
+  };
+}
+
+/** Coloured glow at the screen edges (only that player's half in versus mode). */
+function edgeFlash(player, color) {
+  const el = $('edgeFlash');
+  el.style.setProperty('--c', '#' + color.toString(16).padStart(6, '0'));
+  el.className = isTwo() ? (player === 0 ? 'l' : 'r') : 'all';
+  el.getAnimations().forEach(a => a.cancel());
+  el.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 380, easing: 'ease-out' });
 }
 
 let speedCache = '';
@@ -526,6 +576,7 @@ function updateGame(dt, bodies, pxs) {
   const jt = camera ? t - Math.min(0.25, CAMERA_LATENCY + tracker.latency) : t;
   g.players.forEach((pl, i) => {
     const base = camera ? seats[i].calib : seats[i].virtual.base;
+    pl.body = bodies[i];
     const active = detectAll(bodies[i], base);
     for (const m of active) pl.lastTrue[m] = jt;
     if (i === 0 && !isTwo()) showDetected(active);
@@ -648,7 +699,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) pause
 function smoothForDisplay(seat, body, dt) {
   const shown = seat.shown;
   if (!body) { seat.shownValid = false; return null; }
-  const k = seat.shownValid ? 1 - Math.exp(-dt * 28) : 1;
+  const k = seat.shownValid ? 1 - Math.exp(-dt * 40) : 1;
   for (const name in shown) if (!body[name]) delete shown[name];
   for (const name in body) {
     const b = body[name], s = shown[name];
@@ -666,12 +717,37 @@ function previewBody(px) {
   return toBody(px, { cx: (px.lSh.x + px.rSh.x) / 2, cy: (px.lSh.y + px.rSh.y) / 2, sw: Math.max(sw, 1) });
 }
 
+// ---------------- FPS counter (press F) ----------------
+const fpsMeter = { on: false, frames: 0, t: 0 };
+try { fpsMeter.on = localStorage.getItem('neonpulse.fps') === '1'; } catch { /* ignore */ }
+$('fps').classList.toggle('hidden', !fpsMeter.on);
+window.addEventListener('keydown', e => {
+  if (e.code !== 'KeyF') return;
+  fpsMeter.on = !fpsMeter.on;
+  $('fps').classList.toggle('hidden', !fpsMeter.on);
+  try { localStorage.setItem('neonpulse.fps', fpsMeter.on ? '1' : '0'); } catch { /* ignore */ }
+});
+function updateFps(dt) {
+  fpsMeter.frames++;
+  fpsMeter.t += dt;
+  if (fpsMeter.t < 0.5 || !fpsMeter.on) { if (fpsMeter.t >= 0.5) { fpsMeter.t = 0; fpsMeter.frames = 0; } return; }
+  const fps = Math.round(fpsMeter.frames / fpsMeter.t);
+  fpsMeter.t = 0;
+  fpsMeter.frames = 0;
+  const tracking = settings.mode === 'camera' && tracker.ready ? ` · Tracking ${Math.round(tracker.fps)}/s` : '';
+  const el = $('fps');
+  el.textContent = `FPS ${fps}${tracking} · Quality ${world.qualityName}`;
+  el.className = fps >= 55 ? 'good' : fps >= 40 ? 'ok' : 'bad';
+}
+
 // ---------------- Main loop ----------------
 let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const rawDt = (now - last) / 1000;
+  const dt = Math.min(0.05, rawDt);
   last = now;
+  updateFps(rawDt);
 
   const n = nPlayers();
   let pxs = [null, null];

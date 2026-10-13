@@ -466,15 +466,16 @@ export class AudioEngine {
   sfxMiss() {
     const c = this.ctx;
     const t = c.currentTime;
+    // soft low "thud"
     const o = c.createOscillator();
-    o.type = 'sawtooth';
-    o.frequency.setValueAtTime(220, t);
-    o.frequency.exponentialRampToValueAtTime(60, t + 0.25);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(48, t + 0.22);
     const lp = c.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = 700;
+    lp.frequency.value = 400;
     const g = c.createGain();
-    this.env(g, t, 0.22, 0.003, 0.25);
+    this.env(g, t, 0.35, 0.004, 0.25);
     o.connect(lp).connect(g).connect(this.sfx);
     o.start(t);
     o.stop(t + 0.3);

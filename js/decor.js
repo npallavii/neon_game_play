@@ -21,6 +21,12 @@ export class Decor {
     this.confettis = [];
   }
 
+  /** Smooth mode: hide the heavier decorations. */
+  setLite(on) {
+    for (const p of this.palms) p.visible = !on;
+    for (const g of this.gems) g.visible = !on;
+  }
+
   // ---------- Rainbow arches you run through ----------
   buildArches() {
     this.archSpacing = 24;
