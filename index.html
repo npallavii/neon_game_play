@@ -31,28 +31,13 @@
       <div id="combo" class="combo">0</div>
       <div class="hud-label">COMBO <span id="mult" class="mult">x1</span></div>
     </div>
-    <div class="hud-right" id="hudShared">
+    <div class="hud-right">
       <div id="trackName" class="hud-label">TRACK</div>
       <div class="progress"><div id="progressFill"></div></div>
       <div class="speed"><span class="hud-label">SPEED</span><span id="speedBars"><i></i><i></i><i></i><i></i><i></i></span><span id="speedVal">x1.0</span></div>
       <div class="hud-hint">P = pause</div>
     </div>
     <div id="detected"><span class="det-label">DETECTED</span><span id="detectedMoves">—</span></div>
-  </div>
-
-  <!-- 2-player versus HUD -->
-  <div id="hud2" class="hidden">
-    <div class="pl p1">
-      <div class="pl-name">PLAYER 1 <span class="crown" id="crown1">👑</span></div>
-      <div class="pl-score" id="p1score">0</div>
-      <div class="pl-combo"><b id="p1combo">0</b> COMBO <span id="p1mult" class="mult">x1</span></div>
-    </div>
-    <div class="hud2-center" id="hud2Center"></div>
-    <div class="pl p2">
-      <div class="pl-name"><span class="crown" id="crown2">👑</span> PLAYER 2</div>
-      <div class="pl-score" id="p2score">0</div>
-      <div class="pl-combo"><b id="p2combo">0</b> COMBO <span id="p2mult" class="mult">x1</span></div>
-    </div>
   </div>
 
   <!-- Coach (guide silhouette) -->
@@ -116,16 +101,6 @@
         </button>
       </div>
 
-      <h2 class="section-title">Players</h2>
-      <div class="modes">
-        <button class="mode active" data-players="1">
-          <strong>🙋 1 Player</strong><span>Solo workout</span>
-        </button>
-        <button class="mode" data-players="2">
-          <strong>🤜🤛 2 Players</strong><span>Versus · needs 3–4 m of space</span>
-        </button>
-      </div>
-
       <button id="startBtn" class="start">START</button>
 
       <details class="howto">
@@ -137,8 +112,6 @@
           <li><b>DUCK</b>: squat under the red beam. <b>JUMP</b>: hop over the purple bar. <b>STEP</b>: move your whole body sideways, away from the wall.</li>
           <li>The coach on the left shows each move just before you need it. Keep hitting in a row to build your combo multiplier.</li>
           <li>Keyboard mode: A / D punch · Q / E high · Z / C knee · W reach · S duck · Space jump · ← / → step.</li>
-          <li><b>2 Players:</b> stand side by side, about 3 m from the camera. Player 1 goes on the left and Player 2 on the right. Stay on your own side!
-            Keyboard keys for Player 2: J / L punch · U / O high · M / . knee · I reach · K duck · Enter jump · H / ; step.</li>
         </ul>
       </details>
     </div>
@@ -186,32 +159,6 @@
       <div class="btn-row">
         <button id="againBtn" class="start small">PLAY AGAIN</button>
         <button id="menuBtn" class="ghost">Menu</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- 2-player results -->
-  <section id="results2" class="screen hidden">
-    <div class="panel results duo-panel">
-      <div id="winner" class="winner">PLAYER 1 WINS! 🏆</div>
-      <div id="resTrack2" class="hud-label"></div>
-      <div class="duo">
-        <div class="duo-col p1">
-          <div class="pl-name">PLAYER 1</div>
-          <div class="mini-stars" id="r1stars"></div>
-          <div class="res-score" id="r1score">0</div>
-          <div class="duo-stats"><span>Perfect</span><b id="r1perfect">0</b><span>Great</span><b id="r1great">0</b><span>Good</span><b id="r1good">0</b><span>Miss</span><b id="r1miss">0</b><span>Max combo</span><b id="r1combo">0</b><span>Accuracy</span><b id="r1acc">0</b></div>
-        </div>
-        <div class="duo-col p2">
-          <div class="pl-name">PLAYER 2</div>
-          <div class="mini-stars" id="r2stars"></div>
-          <div class="res-score" id="r2score">0</div>
-          <div class="duo-stats"><span>Perfect</span><b id="r2perfect">0</b><span>Great</span><b id="r2great">0</b><span>Good</span><b id="r2good">0</b><span>Miss</span><b id="r2miss">0</b><span>Max combo</span><b id="r2combo">0</b><span>Accuracy</span><b id="r2acc">0</b></div>
-        </div>
-      </div>
-      <div class="btn-row">
-        <button id="againBtn2" class="start small">REMATCH</button>
-        <button id="menuBtn2" class="ghost">Menu</button>
       </div>
     </div>
   </section>

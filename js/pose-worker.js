@@ -13,7 +13,7 @@ self.onmessage = async e => {
       const opts = (model, delegate) => ({
         baseOptions: { modelAssetPath: msg.models[model], delegate },
         runningMode: 'VIDEO',
-        numPoses: msg.numPoses || 1,
+        numPoses: 1,
         minPoseDetectionConfidence: 0.6,
         minPosePresenceConfidence: 0.6,
         minTrackingConfidence: 0.6,
@@ -37,21 +37,17 @@ self.onmessage = async e => {
     return;
   }
 
-  if (msg.type === 'options') {
-    try { await landmarker?.setOptions({ numPoses: msg.numPoses }); } catch (err) { console.warn('[pose worker] setOptions failed', err); }
-    return;
-  }
-
   if (msg.type === 'frame') {
     const { bitmap, ts } = msg;
-    let lms = [];
+    let lm = null;
     try {
       const res = landmarker.detectForVideo(bitmap, ts);
-      lms = (res.landmarks || []).map(p => p.map(q => [q.x, q.y, q.visibility ?? 1]));
+      const p = res.landmarks?.[0];
+      if (p) lm = p.map(q => [q.x, q.y, q.visibility ?? 1]);
     } catch (err) {
       console.warn('[pose worker] detect failed', err);
     }
     bitmap.close();
-    self.postMessage({ type: 'result', lms, ts });
+    self.postMessage({ type: 'result', lm, ts });
   }
 };

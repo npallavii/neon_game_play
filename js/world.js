@@ -11,6 +11,7 @@ import { Decor } from './decor.js';
 export const S = 0.5;
 export const OY = 1.75;
 export const SPEED = 20; // block speed, metres / second
+const LANE_W = 5.6;      // width of full-lane blocks (duck / jump bars)
 const FOG = new THREE.Color(0x1a0433);
 
 const bw = (x, y, z = 0) => new THREE.Vector3(x * S, OY + y * S, z);
@@ -145,16 +146,13 @@ export class World {
         uOffset: { value: 0 },
         uPulse: { value: 0 },
         uBeat: { value: 0 },
-        uFlashA: { value: new THREE.Vector3() },
-        uFlashB: { value: new THREE.Vector3() },
-        uLaneX: { value: new THREE.Vector2() },
-        uLaneW: { value: 3 },
+        uFlash: { value: new THREE.Vector3() },
         uFog: { value: FOG },
       },
       vertexShader: `varying vec3 vPos; void main(){ vec4 w = modelMatrix * vec4(position,1.0); vPos = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
       fragmentShader: `
         varying vec3 vPos; uniform float uOffset; uniform float uPulse; uniform float uBeat; uniform vec3 uFog;
-        uniform vec3 uFlashA; uniform vec3 uFlashB; uniform vec2 uLaneX; uniform float uLaneW;
+        uniform vec3 uFlash;
         float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         vec3 hue(float h){ return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
         void main(){
@@ -179,10 +177,8 @@ export class World {
           float fadeT = 1.0 - smoothstep(20.0, 80.0, d);
           col += tc * tile * onTrack * lit * fadeT * (0.22 + uPulse * 0.45);
           // tiles under a player flash in their colour when they score
-          float nearP = 1.0 - smoothstep(1.0, 16.0, d);
-          float inA = 1.0 - step(uLaneW, abs(vPos.x - uLaneX.x));
-          float inB = 1.0 - step(uLaneW, abs(vPos.x - uLaneX.y));
-          col += (uFlashA * inA + uFlashB * inB) * tile * nearP;
+          float nearP = 1.0 - smoothstep(1.0, 10.0, d);
+          col += uFlash * tile * onTrack * nearP;
           float fog = smoothstep(30.0, 170.0, d);
           gl_FragColor = vec4(mix(col, uFog, fog), 1.0);
         }`,
@@ -250,34 +246,12 @@ export class World {
     const hit = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.03, 0.08), this.hitLineMat);
     hit.position.set(0, 0.02, 0);
     this.scene.add(hit);
-    // Centre divider, shown in 2-player mode
-    this.divider = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 300), new THREE.MeshBasicMaterial({ color: neon(0xffd23f, 1.2), toneMapped: false }));
-    this.divider.position.set(0, 0.03, -148);
-    this.divider.visible = false;
-    this.scene.add(this.divider);
   }
 
   // ---------------- Player avatars ----------------
 
   buildAvatar() {
-    this.avatars = [
-      new Avatar(this, { bone: 0x00e5ff, joint: 0x9ff8ff, hand: 0xff2bd6, face: '#7ff6ff', glow: '0,240,255' }),
-      new Avatar(this, { bone: 0xff6ad5, joint: 0xffc2ee, hand: 0xffd23f, face: '#ffb3e6', glow: '255,106,213' }),
-    ];
-    this.setPlayers(1);
-  }
-
-  /** 1 player: one centred lane. 2 players: two lanes side by side. */
-  setPlayers(n) {
-    this.numPlayers = n;
-    this.laneX = n === 2 ? [-1.55, 1.55] : [0, 0];
-    this.laneWidth = n === 2 ? 2.9 : 5.6;
-    this.camZ = n === 2 ? 4.9 : 3.9;
-    this.divider.visible = n === 2;
-    const u = this.grid.material.uniforms;
-    u.uLaneX.value.set(this.laneX[0], this.laneX[1]);
-    u.uLaneW.value = n === 2 ? 1.5 : 3.0;
-    if (n === 1) this.avatars[1].set(null);
+    this.avatar = new Avatar(this, { bone: 0x00e5ff, joint: 0x9ff8ff, hand: 0xff2bd6, face: '#7ff6ff', glow: '0,240,255' });
   }
 
   faceSprite(excited, ring = '#7ff6ff') {
@@ -311,8 +285,8 @@ export class World {
   }
 
   /** Show the excited face for a moment (after a hit). */
-  cheer(i = 0) {
-    this.avatars[i].moodUntil = this.time + 0.5;
+  cheer() {
+    this.avatar.moodUntil = this.time + 0.5;
   }
 
   /** Short burst of extra warp + glow when the speed level goes up. */
@@ -324,9 +298,9 @@ export class World {
     this.decor.confetti();
   }
 
-  /** body: pose dict in body space (or null to hide); i: player index */
-  setAvatar(body, i = 0) {
-    this.avatars[i].set(body, this.laneX[i]);
+  /** body: pose dict in body space (or null to hide) */
+  setAvatar(body) {
+    this.avatar.set(body);
   }
 
   // ---------------- Notes ----------------
@@ -456,15 +430,14 @@ export class World {
         break;
       }
       case 'duck': {
-        const W = this.laneWidth;
-        addBox(W, 0.32, 0.35);
-        addFace(this.bannerTexture('▼  DUCK  ▼', m.color, Math.round((64 * W) / 0.32), 64), W, 0.32, 0.18);
+        addBox(LANE_W, 0.32, 0.35);
+        addFace(this.bannerTexture('▼  DUCK  ▼', m.color, 1024, 64), LANE_W, 0.32, 0.18);
         target = bw(0, 0.75);
         group.position.copy(target).setZ(0);
         break;
       }
       case 'jump': {
-        addBox(this.laneWidth, 0.22, 0.35);
+        addBox(LANE_W, 0.22, 0.35);
         const f = addFace(this.bannerTexture('▲  JUMP  ▲', m.color, 1024, 96), 2.4, 0.22, 0.18);
         f.position.y = 0;
         target = new THREE.Vector3(0, 0.22, 0);
@@ -480,13 +453,6 @@ export class World {
         group.position.copy(target);
         break;
       }
-    }
-    // shift into this player's lane
-    const lx = this.laneX[note.player || 0] || 0;
-    if (lx) {
-      group.position.x += lx;
-      target.x += lx;
-      if (note.ring) note.ring.position.x += lx;
     }
     group.userData.edgeMat = edgeMat;
     group.userData.fillMat = fillMat;
@@ -546,8 +512,8 @@ export class World {
     this.burst(pos, color, big ? 70 : 45);           // sparks
     this.shockwave(pos, color);                      // thin ring
     this.flare(pos, color, big ? 1.4 : 1);          // big soft colour burst
-    this.flashFloor(note.player || 0, color);        // dance-floor tiles light up
-    this.avatars[note.player || 0].flash(parts, color);
+    this.flashFloor(color);                          // dance-floor tiles light up
+    this.avatar.flash(parts, color);
     if (big) this.impact();                          // punchy camera bump
     this.removeNote(note);
   }
@@ -565,7 +531,7 @@ export class World {
     this.bursts = [];
     this.waves = [];
     this.fx = [];        // simple timed effects: { obj, age, life, step(k) }
-    this.floorFlash = [{ c: new THREE.Color(), k: 0 }, { c: new THREE.Color(), k: 0 }];
+    this.floorFlash = { c: new THREE.Color(), k: 0 };
     this.impactT = 0;
     this.buildShards();
   }
@@ -649,14 +615,14 @@ export class World {
   /** Big soft burst of light in the block's colour. */
   flare(pos, color, size = 1) {
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: this.glowTexture(), color: neon(color, 1.6), transparent: true, depthWrite: false,
+      map: this.glowTexture(), color: neon(color, 0.8), transparent: true, depthWrite: false,
       blending: THREE.AdditiveBlending, toneMapped: false,
     }));
     sp.position.copy(pos);
     this.scene.add(sp);
     this.fx.push({
       obj: sp, age: 0, life: 0.4,
-      step: k => { sp.scale.setScalar((0.6 + k * 2.6) * size); sp.material.opacity = (1 - k) * (1 - k); },
+      step: k => { sp.scale.setScalar((0.5 + k * 1.5) * size); sp.material.opacity = (1 - k) * (1 - k) * 0.7; },
     });
   }
 
@@ -682,10 +648,9 @@ export class World {
     });
   }
 
-  flashFloor(player, color) {
-    const f = this.floorFlash[player];
-    f.c.setHex(color);
-    f.k = 1;
+  flashFloor(color) {
+    this.floorFlash.c.setHex(color);
+    this.floorFlash.k = 1;
   }
 
   /** Short punchy camera bump (for PERFECT hits). */
@@ -705,12 +670,9 @@ export class World {
       }
       return true;
     });
-    const u = this.grid.material.uniforms;
-    this.floorFlash.forEach((f, i) => {
-      f.k = Math.max(0, f.k - dt * 3);
-      const target = i === 0 ? u.uFlashA.value : u.uFlashB.value;
-      target.set(f.c.r, f.c.g, f.c.b).multiplyScalar(f.k * 0.9);
-    });
+    const f = this.floorFlash;
+    f.k = Math.max(0, f.k - dt * 3);
+    this.grid.material.uniforms.uFlash.value.set(f.c.r, f.c.g, f.c.b).multiplyScalar(f.k * 0.45);
     this.impactT = Math.max(0, this.impactT - dt * 6);
   }
 
@@ -813,7 +775,7 @@ export class World {
     this.camera.position.set(
       Math.sin(this.time * 0.35) * 0.08 + (Math.random() - 0.5) * s,
       1.7 + Math.sin(this.time * 0.5) * 0.03 + (Math.random() - 0.5) * s,
-      this.camZ,
+      3.9,
     );
     this.camera.lookAt(this.lookAt);
 
@@ -893,7 +855,7 @@ export class World {
   }
 }
 
-/** One neon stick-figure player (bones, joints, smiley head, floor glow). */
+/** The player's neon stick figure (bones, joints, smiley head, floor glow, hand trails). */
 class Avatar {
   constructor(world, c) {
     this.world = world;
@@ -974,8 +936,8 @@ class Avatar {
     this.glow.visible = false;
   }
 
-  /** body: pose dict in body space or null; laneX: sideways offset in metres */
-  set(body, laneX = 0) {
+  /** body: pose dict in body space or null */
+  set(body) {
     const visible = !!body;
     this.group.visible = visible;
     this.glow.visible = visible;
@@ -984,7 +946,7 @@ class Avatar {
     // reuse vectors every frame (no garbage -> no GC stutter)
     const { V, P } = this;
     for (const k in P) P[k] = null;
-    for (const k in body) P[k] = (V[k] ??= new THREE.Vector3()).set(laneX + body[k][0] * S, OY + body[k][1] * S, 0.25);
+    for (const k in body) P[k] = (V[k] ??= new THREE.Vector3()).set(body[k][0] * S, OY + body[k][1] * S, 0.25);
     if (P.lSh && P.rSh) P.neck = (V.neck ??= new THREE.Vector3()).copy(P.lSh).add(P.rSh).multiplyScalar(0.5);
     for (const { a, b, m } of this.bones) {
       const p = P[a], q = P[b];
